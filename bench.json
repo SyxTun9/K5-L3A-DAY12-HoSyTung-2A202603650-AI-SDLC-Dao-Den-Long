@@ -1,0 +1,12 @@
+{
+  "avg_fps": 161.7,
+  "contract_version": "1.3",
+  "frame_ms_p95": 9.9,
+  "frames": 4852,
+  "load_ms": 286,
+  "os": "Windows",
+  "p1_low_fps": 69.0,
+  "peak_mem_mb": 75,
+  "renderer": "Godot 4.7.2 GL Compatibility",
+  "vsync_off": true
+}

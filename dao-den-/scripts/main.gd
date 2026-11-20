@@ -48,33 +48,87 @@ var settings_box: VBoxContainer
 var mouse_sensitivity := 0.004
 var master_volume_db := 0.0
 var colorblind_mode := false
+var reduce_motion := false
+var large_ui := false
 var bgm_player: AudioStreamPlayer
 var countdown_mark := -1
 
+var subtitle_banner: Label
+var leaderboard_panel: PanelContainer
+var leaderboard_text: Label
+var name_entry_dialog: PanelContainer
+var name_input: LineEdit
+var pending_score := 0
+var pending_nights_won := 0
+var awaiting_name := false
+var round_seed := 1
+var key_rebind_action := ""
+var keybind_buttons: Dictionary = {}
+var keybind_alert: Label
+
+const LEADERBOARD_PATH := "user://leaderboard.json"
+const DEFAULT_KEY_BINDINGS: Dictionary = {
+	"move_forward": KEY_W,
+	"move_back": KEY_S,
+	"move_left": KEY_A,
+	"move_right": KEY_D,
+	"jump": KEY_SPACE,
+	"dash": KEY_SHIFT,
+	"interact": KEY_E,
+	"pulse": KEY_Q,
+	"pause": KEY_P
+}
+var key_bindings: Dictionary = DEFAULT_KEY_BINDINGS.duplicate()
+
 
 func _ready() -> void:
+	_check_cli()
 	rng.randomize()
-	_setup_inputs()
+	round_seed = rng.randi()
 	_load_settings()
+	_setup_inputs()
 	_build_world()
 	_build_night_map()
 	_start_background_music()
 	game_state = "menu"
-	result_label.text = "ĐẢO ĐÈN LỒNG\nĐêm tối đang phủ lên ba hòn đảo\nNhấn Enter để bắt đầu"
+	result_label.text = "ĐẢO ĐÈN LỒNG\nĐêm tối đang phủ lên ba hòn đảo\nNhấn Enter để bắt đầu | Nhấn L: Bảng xếp hạng"
+
+
+func _check_cli() -> void:
+	var args := OS.get_cmdline_args() + OS.get_cmdline_user_args()
+	for i in range(args.size()):
+		if args[i] == "--export-leaderboard" and i + 1 < args.size():
+			var out_file := str(args[i + 1])
+			var board := _load_leaderboard()
+			var data := {"entries": board}
+			var json_text := JSON.stringify(data, "  ")
+			var global_out := ProjectSettings.globalize_path(out_file)
+			var parent_dir := global_out.get_base_dir()
+			if not parent_dir.is_empty() and not DirAccess.dir_exists_absolute(parent_dir):
+				DirAccess.make_dir_recursive_absolute(parent_dir)
+			var f := FileAccess.open(out_file, FileAccess.WRITE)
+			if f != null:
+				f.store_string(json_text)
+				f.close()
+				print("Leaderboard exported to: ", out_file)
+			else:
+				push_error("Failed to write leaderboard export to: " + out_file)
+			get_tree().quit(0)
+			return
 
 
 func _setup_inputs() -> void:
-	_add_key_action("move_forward", KEY_W)
-	_add_key_action("move_back", KEY_S)
-	_add_key_action("move_left", KEY_A)
-	_add_key_action("move_right", KEY_D)
-	_add_key_action("jump", KEY_SPACE)
-	_add_key_action("interact", KEY_E)
-	_add_key_action("pulse", KEY_Q)
-	_add_key_action("dash", KEY_SHIFT)
-	_add_key_action("restart", KEY_R)
-	_add_key_action("pause", KEY_P)
+	for action in key_bindings:
+		if InputMap.has_action(action):
+			InputMap.action_erase_events(action)
+		else:
+			InputMap.add_action(action)
+		var event := InputEventKey.new()
+		event.physical_keycode = key_bindings[action]
+		InputMap.action_add_event(action, event)
+	# Secondary default fallbacks
 	_add_key_action("pause", KEY_ESCAPE)
+	_add_key_action("restart", KEY_R)
 	_add_key_action("start", KEY_ENTER)
 
 
@@ -313,11 +367,21 @@ func _build_world() -> void:
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
+
 	hud = Label.new()
 	hud.position = Vector2(24, 20)
-	hud.add_theme_font_size_override("font_size", 20)
+	hud.add_theme_font_size_override("font_size", 25 if large_ui else 20)
 	hud.add_theme_color_override("font_color", Color("fff1cb"))
 	layer.add_child(hud)
+
+	subtitle_banner = Label.new()
+	subtitle_banner.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	subtitle_banner.position = Vector2(0, 110)
+	subtitle_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle_banner.add_theme_font_size_override("font_size", 22 if large_ui else 18)
+	subtitle_banner.add_theme_color_override("font_color", Color("ffeb3b"))
+	layer.add_child(subtitle_banner)
+
 	result_label = Label.new()
 	result_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	result_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -325,9 +389,11 @@ func _build_hud() -> void:
 	result_label.add_theme_font_size_override("font_size", 34)
 	result_label.add_theme_color_override("font_color", Color("ffe2a0"))
 	layer.add_child(result_label)
+
+	# Pause Panel
 	pause_panel = PanelContainer.new()
 	pause_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	pause_panel.custom_minimum_size = Vector2(360, 300)
+	pause_panel.custom_minimum_size = Vector2(400, 380)
 	layer.add_child(pause_panel)
 	var menu := VBoxContainer.new()
 	pause_panel.add_child(menu)
@@ -335,21 +401,31 @@ func _build_hud() -> void:
 	title.text = "TẠM DỪNG"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	menu.add_child(title)
+
 	var resume_button := Button.new()
 	resume_button.text = "Tiếp tục"
 	resume_button.pressed.connect(_resume_game)
 	menu.add_child(resume_button)
+
 	var restart_button := Button.new()
 	restart_button.text = "Chơi lại đêm này"
 	restart_button.pressed.connect(_restart_night)
 	menu.add_child(restart_button)
+
+	var leaderboard_btn := Button.new()
+	leaderboard_btn.text = "Bảng xếp hạng (Top 10)"
+	leaderboard_btn.pressed.connect(_show_leaderboard)
+	menu.add_child(leaderboard_btn)
+
 	var settings_button := Button.new()
-	settings_button.text = "Cài đặt âm lượng / độ nhạy"
+	settings_button.text = "Cài đặt & Dễ tiếp cận"
 	settings_button.pressed.connect(func(): settings_box.visible = not settings_box.visible)
 	menu.add_child(settings_button)
+
 	settings_box = VBoxContainer.new()
 	settings_box.visible = false
 	menu.add_child(settings_box)
+
 	var volume_label := Label.new()
 	volume_label.text = "Âm lượng tổng"
 	settings_box.add_child(volume_label)
@@ -359,6 +435,7 @@ func _build_hud() -> void:
 	volume_slider.value = master_volume_db
 	volume_slider.value_changed.connect(_on_volume_changed)
 	settings_box.add_child(volume_slider)
+
 	var sensitivity_label := Label.new()
 	sensitivity_label.text = "Độ nhạy chuột"
 	settings_box.add_child(sensitivity_label)
@@ -369,16 +446,114 @@ func _build_hud() -> void:
 	sensitivity_slider.value = mouse_sensitivity
 	sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
 	settings_box.add_child(sensitivity_slider)
+
 	var colorblind_toggle := CheckButton.new()
 	colorblind_toggle.text = "Chế độ phân biệt màu"
 	colorblind_toggle.button_pressed = colorblind_mode
 	colorblind_toggle.toggled.connect(_on_colorblind_toggled)
 	settings_box.add_child(colorblind_toggle)
+
+	var motion_toggle := CheckButton.new()
+	motion_toggle.text = "Giảm rung chấn / chuyển động"
+	motion_toggle.button_pressed = reduce_motion
+	motion_toggle.toggled.connect(_on_reduce_motion_toggled)
+	settings_box.add_child(motion_toggle)
+
+	var large_ui_toggle := CheckButton.new()
+	large_ui_toggle.text = "Chữ lớn UI (×1.25)"
+	large_ui_toggle.button_pressed = large_ui
+	large_ui_toggle.toggled.connect(_on_large_ui_toggled)
+	settings_box.add_child(large_ui_toggle)
+
+	# Key rebind header & list
+	var key_header := Label.new()
+	key_header.text = "-- Đổi phím điều khiển --"
+	settings_box.add_child(key_header)
+
+	keybind_alert = Label.new()
+	keybind_alert.add_theme_color_override("font_color", Color("ff5252"))
+	settings_box.add_child(keybind_alert)
+
+	var actions_labels := {
+		"move_forward": "Tiến",
+		"move_back": "Lùi",
+		"move_left": "Trái",
+		"move_right": "Phải",
+		"jump": "Nhảy",
+		"dash": "Lướt",
+		"interact": "Nạp đèn",
+		"pulse": "Xung sáng",
+		"pause": "Tạm dừng"
+	}
+	for act in actions_labels:
+		var btn := Button.new()
+		var key_code: int = key_bindings.get(act, KEY_NONE)
+		btn.text = "%s: %s" % [actions_labels[act], OS.get_keycode_string(key_code)]
+		btn.pressed.connect(_start_key_rebind.bind(act))
+		keybind_buttons[act] = btn
+		settings_box.add_child(btn)
+
+	var reset_keys_btn := Button.new()
+	reset_keys_btn.text = "Khôi phục phím mặc định"
+	reset_keys_btn.pressed.connect(_reset_default_keybinds)
+	settings_box.add_child(reset_keys_btn)
+
 	var menu_button := Button.new()
 	menu_button.text = "Về màn hình chính"
 	menu_button.pressed.connect(_return_to_menu)
 	menu.add_child(menu_button)
 	pause_panel.visible = false
+
+	# Leaderboard Modal
+	leaderboard_panel = PanelContainer.new()
+	leaderboard_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	leaderboard_panel.custom_minimum_size = Vector2(500, 360)
+	leaderboard_panel.visible = false
+	layer.add_child(leaderboard_panel)
+	var lb_vbox := VBoxContainer.new()
+	leaderboard_panel.add_child(lb_vbox)
+	var lb_title := Label.new()
+	lb_title.text = "BẢNG XẾP HẠNG (TOP 10)"
+	lb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lb_title.add_theme_font_size_override("font_size", 22)
+	lb_vbox.add_child(lb_title)
+	leaderboard_text = Label.new()
+	leaderboard_text.add_theme_font_size_override("font_size", 16)
+	lb_vbox.add_child(leaderboard_text)
+	var lb_close := Button.new()
+	lb_close.text = "Đóng"
+	lb_close.pressed.connect(func(): leaderboard_panel.visible = false)
+	lb_vbox.add_child(lb_close)
+
+	# Name Entry Modal
+	name_entry_dialog = PanelContainer.new()
+	name_entry_dialog.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	name_entry_dialog.custom_minimum_size = Vector2(360, 200)
+	name_entry_dialog.visible = false
+	layer.add_child(name_entry_dialog)
+	var ne_vbox := VBoxContainer.new()
+	name_entry_dialog.add_child(ne_vbox)
+	var ne_title := Label.new()
+	ne_title.text = "LƯU ĐIỂM BẢNG XẾP HẠNG"
+	ne_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ne_vbox.add_child(ne_title)
+	var ne_hint := Label.new()
+	ne_hint.text = "Nhập tên (3–12 ký tự [A-Za-z0-9_]):"
+	ne_vbox.add_child(ne_hint)
+	name_input = LineEdit.new()
+	name_input.text = "Player"
+	name_input.max_length = 12
+	ne_vbox.add_child(name_input)
+	var ne_btn_box := HBoxContainer.new()
+	ne_vbox.add_child(ne_btn_box)
+	var ne_submit := Button.new()
+	ne_submit.text = "Lưu điểm"
+	ne_submit.pressed.connect(_on_name_submitted)
+	ne_btn_box.add_child(ne_submit)
+	var ne_skip := Button.new()
+	ne_skip.text = "Bỏ qua"
+	ne_skip.pressed.connect(func(): name_entry_dialog.visible = false; awaiting_name = false)
+	ne_btn_box.add_child(ne_skip)
 
 
 func _load_settings() -> void:
@@ -387,6 +562,10 @@ func _load_settings() -> void:
 		master_volume_db = float(config.get_value("audio", "master_db", 0.0))
 		mouse_sensitivity = float(config.get_value("input", "mouse_sensitivity", 0.004))
 		colorblind_mode = bool(config.get_value("accessibility", "colorblind_mode", false))
+		reduce_motion = bool(config.get_value("accessibility", "reduce_motion", false))
+		large_ui = bool(config.get_value("accessibility", "large_ui", false))
+		for action in DEFAULT_KEY_BINDINGS:
+			key_bindings[action] = int(config.get_value("keybinds", action, DEFAULT_KEY_BINDINGS[action]))
 	AudioServer.set_bus_volume_db(0, master_volume_db)
 
 
@@ -395,6 +574,10 @@ func _save_settings() -> void:
 	config.set_value("audio", "master_db", master_volume_db)
 	config.set_value("input", "mouse_sensitivity", mouse_sensitivity)
 	config.set_value("accessibility", "colorblind_mode", colorblind_mode)
+	config.set_value("accessibility", "reduce_motion", reduce_motion)
+	config.set_value("accessibility", "large_ui", large_ui)
+	for action in key_bindings:
+		config.set_value("keybinds", action, key_bindings[action])
 	config.save("user://settings.cfg")
 
 
@@ -412,6 +595,161 @@ func _on_sensitivity_changed(value: float) -> void:
 func _on_colorblind_toggled(enabled: bool) -> void:
 	colorblind_mode = enabled
 	_save_settings()
+
+
+func _on_reduce_motion_toggled(enabled: bool) -> void:
+	reduce_motion = enabled
+	_save_settings()
+
+
+func _on_large_ui_toggled(enabled: bool) -> void:
+	large_ui = enabled
+	if is_instance_valid(hud):
+		hud.add_theme_font_size_override("font_size", 25 if large_ui else 20)
+	if is_instance_valid(subtitle_banner):
+		subtitle_banner.add_theme_font_size_override("font_size", 22 if large_ui else 18)
+	_save_settings()
+
+
+func _start_key_rebind(action: String) -> void:
+	key_rebind_action = action
+	if keybind_buttons.has(action):
+		keybind_buttons[action].text = "... Nhấn phím mới ..."
+	keybind_alert.text = "Nhấn phím mới cho hành động này (Esc để hủy)..."
+
+
+func _refresh_keybind_buttons() -> void:
+	var actions_labels := {
+		"move_forward": "Tiến",
+		"move_back": "Lùi",
+		"move_left": "Trái",
+		"move_right": "Phải",
+		"jump": "Nhảy",
+		"dash": "Lướt",
+		"interact": "Nạp đèn",
+		"pulse": "Xung sáng",
+		"pause": "Tạm dừng"
+	}
+	for act in keybind_buttons:
+		var key_code: int = key_bindings.get(act, KEY_NONE)
+		keybind_buttons[act].text = "%s: %s" % [actions_labels.get(act, act), OS.get_keycode_string(key_code)]
+
+
+func _reset_default_keybinds() -> void:
+	key_bindings = DEFAULT_KEY_BINDINGS.duplicate()
+	key_rebind_action = ""
+	keybind_alert.text = "Đã khôi phục phím mặc định!"
+	_refresh_keybind_buttons()
+	_setup_inputs()
+	_save_settings()
+
+
+func _load_leaderboard() -> Array[Dictionary]:
+	if not FileAccess.file_exists(LEADERBOARD_PATH):
+		return []
+	var f := FileAccess.open(LEADERBOARD_PATH, FileAccess.READ)
+	if f == null:
+		return []
+	var text := f.get_as_text()
+	f.close()
+	var json = JSON.parse_string(text)
+	var entries: Array[Dictionary] = []
+	if json is Dictionary and json.has("entries") and json["entries"] is Array:
+		for item in json["entries"]:
+			if item is Dictionary:
+				entries.append(item)
+	elif json is Array:
+		for item in json:
+			if item is Dictionary:
+				entries.append(item)
+	_sort_leaderboard(entries)
+	return entries
+
+
+func _save_leaderboard(entries: Array[Dictionary]) -> void:
+	_sort_leaderboard(entries)
+	if entries.size() > 10:
+		entries = entries.slice(0, 10)
+	var global_out := ProjectSettings.globalize_path(LEADERBOARD_PATH)
+	var parent_dir := global_out.get_base_dir()
+	if not parent_dir.is_empty() and not DirAccess.dir_exists_absolute(parent_dir):
+		DirAccess.make_dir_recursive_absolute(parent_dir)
+	var f := FileAccess.open(LEADERBOARD_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify({"entries": entries}, "  "))
+		f.close()
+
+
+func _sort_leaderboard(entries: Array[Dictionary]) -> void:
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa := int(a.get("score", 0))
+		var sb := int(b.get("score", 0))
+		if sa != sb:
+			return sa > sb
+		return str(a.get("achieved_at", "")) < str(b.get("achieved_at", ""))
+	)
+
+
+func _add_leaderboard_entry(p_name: String, p_score: int, p_nights_won: int, p_seed: int) -> void:
+	var clean_name := p_name.strip_edges()
+	var regex := RegEx.new()
+	regex.compile("[^A-Za-z0-9_]")
+	clean_name = regex.sub(clean_name, "", true)
+	if clean_name.length() < 3:
+		clean_name = "Player"
+	elif clean_name.length() > 12:
+		clean_name = clean_name.substr(0, 12)
+	var tz := Time.get_time_zone_from_system()
+	var bias_mins := int(tz.get("bias", 0))
+	var sign_str := "+" if bias_mins >= 0 else "-"
+	var abs_mins := absi(bias_mins)
+	var tz_str := "%s%02d:%02d" % [sign_str, abs_mins / 60, abs_mins % 60]
+	var iso_time := Time.get_datetime_string_from_system(false, false) + tz_str
+	var entry := {
+		"name": clean_name,
+		"score": p_score,
+		"nights_won": p_nights_won,
+		"achieved_at": iso_time,
+		"seed": p_seed
+	}
+	var list := _load_leaderboard()
+	list.append(entry)
+	_save_leaderboard(list)
+
+
+func _show_leaderboard() -> void:
+	var list := _load_leaderboard()
+	var lines := "HẠNG   TÊN          ĐIỂM      ĐÊM THẮNG    THỜI GIAN\n"
+	lines += "--------------------------------------------------------\n"
+	if list.is_empty():
+		lines += "Chưa có điểm nào được lưu.\n"
+	else:
+		for i in range(list.size()):
+			var e: Dictionary = list[i]
+			lines += "%-6d %-12s %-9d %-12d %s\n" % [
+				i + 1,
+				str(e.get("name", "Player")),
+				int(e.get("score", 0)),
+				int(e.get("nights_won", 0)),
+				str(e.get("achieved_at", "")).substr(0, 19)
+			]
+	leaderboard_text.text = lines
+	leaderboard_panel.visible = true
+
+
+func _show_name_entry(p_score: int, p_nights_won: int) -> void:
+	pending_score = p_score
+	pending_nights_won = p_nights_won
+	awaiting_name = true
+	name_entry_dialog.visible = true
+
+
+func _on_name_submitted() -> void:
+	var p_name := name_input.text
+	_add_leaderboard_entry(p_name, pending_score, pending_nights_won, round_seed)
+	name_entry_dialog.visible = false
+	awaiting_name = false
+	_show_leaderboard()
 
 
 func _resume_game() -> void:
@@ -942,6 +1280,37 @@ func _material(color: Color, emission: float) -> StandardMaterial3D:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if key_rebind_action != "":
+		if event is InputEventKey and event.pressed and not event.echo:
+			var new_key: int = event.physical_keycode
+			if new_key == KEY_NONE:
+				new_key = event.keycode
+			if new_key == KEY_ESCAPE:
+				key_rebind_action = ""
+				_refresh_keybind_buttons()
+				keybind_alert.text = "Đã hủy đổi phím."
+				return
+			var conflict_act := ""
+			for act in key_bindings:
+				if act != key_rebind_action and key_bindings[act] == new_key:
+					conflict_act = act
+					break
+			if conflict_act != "":
+				keybind_alert.text = "⚠ Phím đã bị trùng với hành động khác!"
+				return
+			key_bindings[key_rebind_action] = new_key
+			key_rebind_action = ""
+			keybind_alert.text = "Đã đổi phím thành công!"
+			_setup_inputs()
+			_save_settings()
+			_refresh_keybind_buttons()
+		return
+
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.physical_keycode == KEY_L and (game_state == "menu" or game_state == "paused"):
+			_show_leaderboard()
+			return
+
 	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		camera_yaw -= event.relative.x * mouse_sensitivity
 		camera_pitch = clampf(camera_pitch - event.relative.y * mouse_sensitivity * 0.625, 0.95, 1.4)
@@ -1380,6 +1749,8 @@ func _check_end() -> void:
 		game_state = "lost"
 		_play_sfx("loss")
 		result_label.text = "ĐÊM TỐI QUÁ!\nĐiểm: %d\nNhấn R để thử lại" % score
+		if not awaiting_name:
+			_show_name_entry(score + total_score, night - 1)
 		return
 	if time_left > 0.0: return
 	var lit_count := 0
@@ -1395,10 +1766,14 @@ func _check_end() -> void:
 			result_label.text = "%s ĐÃ SÁNG!\nĐiểm đêm: %d\nNhấn R sang đêm tiếp theo" % [NIGHT_NAMES[night - 1], score]
 		else:
 			result_label.text = "BÌNH MINH TRÊN BA ĐẢO!\nTổng điểm: %d\nNhấn R để chơi lại" % (total_score + score)
+			if not awaiting_name:
+				_show_name_entry(total_score + score, 3)
 	else:
 		game_state = "lost"
 		_play_sfx("loss")
 		result_label.text = "BÌNH MINH ĐÃ LÊN\nĐiểm: %d\nNhấn R để chơi lại" % score
+		if not awaiting_name:
+			_show_name_entry(score + total_score, night - 1)
 
 
 func _update_hud() -> void:
@@ -1424,6 +1799,32 @@ func _update_hud() -> void:
 			var arrow_index := posmod(roundi(wrapf(rad_to_deg(atan2(delta.x, delta.z)), 0.0, 360.0) / 45.0), 8)
 			var arrows := ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
 			nearest_hint = "%s Đèn gần nhất · E nạp (%d/10) · %.0fm" % [arrows[arrow_index], floori(float(lamp["fuel"])) if lamp["lit"] else int(lamp["deposited"]), d]
+
+	# Offscreen indicator for Shade
+	if is_instance_valid(shade) and shade.visible:
+		var d_shade := _flat_distance(player.position, shade.position)
+		var delta_s: Vector3 = shade.position - player.position
+		delta_s = delta_s.rotated(Vector3.UP, -camera_yaw)
+		var s_idx := posmod(roundi(wrapf(rad_to_deg(atan2(delta_s.x, delta_s.z)), 0.0, 360.0) / 45.0), 8)
+		var arrows := ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
+		nearest_hint += " | Bóng Mực: %s %.0fm" % [arrows[s_idx], d_shade]
+
+	# Subtitle / Visual accessibility banner
+	if is_instance_valid(subtitle_banner):
+		var alert_text := ""
+		if wind_active or gust_warned:
+			alert_text = "⚠ Cảnh báo: Gió mạnh đang nổi lên!"
+		elif time_left <= 10.0 and time_left > 0.0:
+			alert_text = "⚠ Bình minh sắp đến: 10 giây cuối!"
+		else:
+			for lamp in lanterns:
+				if lamp["lit"] and float(lamp["fuel"]) < 30.0:
+					alert_text = "⚠ Đèn %s sắp cạn dầu (<30)!" % str(lamp.get("id", ""))
+					break
+		if alert_text.is_empty() and is_instance_valid(shade) and _flat_distance(player.position, shade.position) <= 15.0:
+			alert_text = "⚠ Cảnh báo: Bóng Mực đang ở gần!"
+		subtitle_banner.text = alert_text
+
 	var capacity := mini(20, 10 + 2 * successful_lights)
 	var mote_bar := "●".repeat(carried) + "○".repeat(maxi(0, capacity - carried))
 	world_environment.environment.ambient_light_energy = 0.15 + 0.55 * float(lit_count) / float(maxi(total_lamps, 1))

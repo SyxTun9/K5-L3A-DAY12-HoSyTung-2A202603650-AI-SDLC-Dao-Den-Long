@@ -47,8 +47,8 @@ func _initialize() -> void:
 	if not last_json_error.is_empty() or contract.is_empty():
 		_fail("Cannot read game.contract.json: " + last_json_error, 1)
 		return
-	if str(contract.get("contract_version", "")) != "1.2":
-		_fail("Expected game.contract.json contract_version 1.2.", 1)
+	if not (str(contract.get("contract_version", "")) in ["1.2", "1.3"]):
+		_fail("Expected game.contract.json contract_version 1.2 or 1.3.", 1)
 		return
 	tuning = contract.get("tuning", {})
 	if tuning.is_empty():
@@ -91,6 +91,10 @@ func _initialize() -> void:
 			output_lines.append(JSON.stringify(_snapshot()))
 
 	var output_path: String = str(options["out"])
+	var global_out := ProjectSettings.globalize_path(output_path)
+	var parent_dir := global_out.get_base_dir()
+	if not parent_dir.is_empty() and not DirAccess.dir_exists_absolute(parent_dir):
+		DirAccess.make_dir_recursive_absolute(parent_dir)
 	var output := FileAccess.open(output_path, FileAccess.WRITE)
 	if output == null:
 		_fail("Cannot write output file: " + output_path, 1)
