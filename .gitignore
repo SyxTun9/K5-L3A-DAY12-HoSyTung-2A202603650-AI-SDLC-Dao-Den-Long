@@ -1,0 +1,7 @@
+# Godot generated cache
+.godot/
+
+# Local diagnostic outputs; checked evidence lives under docs/proof/
+/godot-smoke.log
+/godot-game-smoke.log
+/dao-den-/smoke.jsonl

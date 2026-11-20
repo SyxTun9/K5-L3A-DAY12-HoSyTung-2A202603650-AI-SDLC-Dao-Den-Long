@@ -1,0 +1,13 @@
+Godot 4.7.2 stable — Phase 1 local checks
+
+PASS pickup: mote_picked event, carried count and score
+PASS deposit: deposit and lantern_lit events
+PASS pulse: pulse event includes stunned shade ID
+PASS hit: flame loss and 50% drop; dropped motes do not auto-pick up
+PASS win: game_over all_lit and won end state
+PASS lose: game_over no_flames and lost end state
+PASS determinism: same seed/scenario/inputs produced byte-identical JSONL
+PASS malformed movement input: exit code 2
+PASS GUI scene startup: five headless frames, exit code 0
+
+Command for automated checks: python3 tests/run_phase1_checks.py
