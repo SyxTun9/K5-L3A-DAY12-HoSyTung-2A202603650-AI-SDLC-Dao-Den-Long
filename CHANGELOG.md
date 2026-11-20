@@ -2,6 +2,8 @@
 
 ## Phase 3 — Contract 1.2
 
+- Follow-up: wandering shades now patrol toward lanterns, and pursuit remains active out to 24 m to remove the previous 12–18 m dead zone.
+
 ### Breaking changes
 
 - Nights now last 240/270/300 seconds. Victory is evaluated only at dawn and requires 60% of lamps lit (rounded up).

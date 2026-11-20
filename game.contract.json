@@ -51,7 +51,7 @@
     "shade_speed": 4.0,
     "shade_speed_night3": 4.5,
     "shade_detect_radius": 12.0,
-    "shade_lose_radius": 18.0,
+    "shade_lose_radius": 24.0,
     "shade_hit_radius": 1.0,
     "shade_hit_height": 1.5,
     "shade_recoil_m": 2.0,

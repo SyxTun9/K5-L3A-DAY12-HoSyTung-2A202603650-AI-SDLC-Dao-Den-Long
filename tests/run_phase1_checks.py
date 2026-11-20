@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,7 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "dao-den-"
-GODOT = os.environ.get("GODOT_BIN", "godot")
+_env_godot = os.environ.get("GODOT_BIN", "godot")
+if not shutil.which(_env_godot):
+    for _candidate in [
+        r"D:\Godot\Godot_v4.7.2-stable_win64_console.exe",
+        r"D:\Godot\Godot_v4.7.2-stable_win64.exe",
+        r"C:\Godot\godot.exe",
+    ]:
+        if Path(_candidate).exists():
+            _env_godot = _candidate
+            break
+GODOT = _env_godot
 
 
 def run_case(name, scenario, inputs=None, seed=11, ticks=3, output_dir=None, night=1):

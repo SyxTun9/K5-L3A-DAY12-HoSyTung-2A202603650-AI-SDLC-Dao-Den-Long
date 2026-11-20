@@ -2,6 +2,9 @@ extends Node3D
 
 const HZ := 60.0
 const NIGHT_NAMES := ["Đảo Bến", "Đảo Cau", "Đảo Chuông"]
+const SHADE_DETECT_RADIUS := 12.0
+const SHADE_LOSE_RADIUS := 24.0
+const SHADE_SPEED := 4.0
 
 var rng := RandomNumberGenerator.new()
 var player: CharacterBody3D
@@ -20,6 +23,7 @@ var time_left := 300.0
 var invulnerable := 0.0
 var pulse_cooldown := 0.0
 var shade_stunned := 0.0
+var shade_state := "wander"
 var shade_drain_lamp := -1
 var shade_push_lamp := -1
 var game_state := "playing"
@@ -141,6 +145,67 @@ func _build_world() -> void:
 	body.position.y = 0.9
 	body.material_override = _material(Color("e9c8a0"), 0.0)
 	player.add_child(body)
+	var coat := MeshInstance3D.new()
+	var coat_mesh := CylinderMesh.new()
+	coat_mesh.top_radius = 0.25
+	coat_mesh.bottom_radius = 0.43
+	coat_mesh.height = 0.92
+	coat_mesh.radial_segments = 8
+	coat.mesh = coat_mesh
+	coat.position.y = 0.77
+	coat.material_override = _material(Color("2c7775"), 0.0)
+	player.add_child(coat)
+	var scarf := MeshInstance3D.new()
+	var scarf_mesh := TorusMesh.new()
+	scarf_mesh.inner_radius = 0.22
+	scarf_mesh.outer_radius = 0.29
+	scarf.mesh = scarf_mesh
+	scarf.position.y = 1.48
+	scarf.material_override = _material(Color("e56f55"), 0.15)
+	player.add_child(scarf)
+	var coat_trim := MeshInstance3D.new()
+	var trim_mesh := CylinderMesh.new()
+	trim_mesh.top_radius = 0.255
+	trim_mesh.bottom_radius = 0.34
+	trim_mesh.height = 0.08
+	trim_mesh.radial_segments = 8
+	coat_trim.mesh = trim_mesh
+	coat_trim.position.y = 0.35
+	coat_trim.material_override = _material(Color("e4b866"), 0.0)
+	player.add_child(coat_trim)
+	for side in [-1.0, 1.0]:
+		var sleeve := MeshInstance3D.new()
+		var sleeve_mesh := CapsuleMesh.new()
+		sleeve_mesh.radius = 0.15
+		sleeve_mesh.height = 0.62
+		sleeve.mesh = sleeve_mesh
+		sleeve.position = Vector3(side * 0.38, 1.03, 0.0)
+		sleeve.rotation.z = deg_to_rad(side * -28.0)
+		sleeve.material_override = _material(Color("3d8f87"), 0.0)
+		player.add_child(sleeve)
+		var boot := MeshInstance3D.new()
+		var boot_mesh := BoxMesh.new()
+		boot_mesh.size = Vector3(0.25, 0.16, 0.38)
+		boot.mesh = boot_mesh
+		boot.position = Vector3(side * 0.17, 0.12, -0.06)
+		boot.material_override = _material(Color("493d3c"), 0.0)
+		player.add_child(boot)
+	var backpack := MeshInstance3D.new()
+	var pack_mesh := BoxMesh.new()
+	pack_mesh.size = Vector3(0.46, 0.56, 0.25)
+	backpack.mesh = pack_mesh
+	backpack.position = Vector3(0, 1.02, 0.34)
+	backpack.material_override = _material(Color("9a6743"), 0.0)
+	player.add_child(backpack)
+	for side in [-1.0, 1.0]:
+		var eye := MeshInstance3D.new()
+		var eye_mesh := SphereMesh.new()
+		eye_mesh.radius = 0.055
+		eye_mesh.height = 0.11
+		eye.mesh = eye_mesh
+		eye.position = Vector3(side * 0.13, 1.37, -0.345)
+		eye.material_override = _material(Color("382c36"), 0.0)
+		player.add_child(eye)
 	var hat := MeshInstance3D.new()
 	var hat_mesh := CylinderMesh.new()
 	hat_mesh.top_radius = 0.08
@@ -187,6 +252,8 @@ func _build_world() -> void:
 	var shade_mesh := SphereMesh.new()
 	shade_mesh.radius = 0.72
 	shade_mesh.height = 1.44
+	shade_mesh.radial_segments = 12
+	shade_mesh.rings = 6
 	var shade_visual := MeshInstance3D.new()
 	shade_visual.mesh = shade_mesh
 	shade_visual.material_override = _material(Color("241a3a"), 0.2)
@@ -199,6 +266,39 @@ func _build_world() -> void:
 	shade_outline.position.y = 0.08
 	shade_outline.material_override = _material(Color("7a3cff"), 1.0)
 	shade.add_child(shade_outline)
+	var shade_face := Node3D.new()
+	shade_face.name = "Face"
+	shade.add_child(shade_face)
+	for side in [-1.0, 1.0]:
+		var eye_glow := MeshInstance3D.new()
+		var eye_mesh := SphereMesh.new()
+		eye_mesh.radius = 0.16
+		eye_mesh.height = 0.24
+		eye_glow.mesh = eye_mesh
+		eye_glow.position = Vector3(side * 0.24, 0.45, -0.52)
+		eye_glow.material_override = _material(Color("ff579a"), 2.8)
+		shade_face.add_child(eye_glow)
+		var pupil := MeshInstance3D.new()
+		var pupil_mesh := SphereMesh.new()
+		pupil_mesh.radius = 0.065
+		pupil_mesh.height = 0.1
+		pupil.mesh = pupil_mesh
+		pupil.position = Vector3(side * 0.24, 0.45, -0.65)
+		pupil.material_override = _material(Color("fff1cb"), 1.4)
+		shade_face.add_child(pupil)
+	for i in range(7):
+		var angle := TAU * float(i) / 7.0
+		var tendril := MeshInstance3D.new()
+		var tendril_mesh := CylinderMesh.new()
+		tendril_mesh.top_radius = 0.015
+		tendril_mesh.bottom_radius = 0.13
+		tendril_mesh.height = 0.9
+		tendril_mesh.radial_segments = 5
+		tendril.mesh = tendril_mesh
+		tendril.position = Vector3(cos(angle) * 0.54, 0.06, sin(angle) * 0.54)
+		tendril.rotation = Vector3(cos(angle) * 0.9, 0.0, sin(angle) * -0.9)
+		tendril.material_override = _material(Color("171426"), 0.25)
+		shade.add_child(tendril)
 	var shade_light := OmniLight3D.new()
 	shade_light.light_color = Color("8a42c9")
 	shade_light.light_energy = 0.7
@@ -439,6 +539,9 @@ func _start_round() -> void:
 		_add_charm("C1", Vector3(30, 0, 25))
 		_add_charm("C2", Vector3(-30, 0, 25))
 	shade_stunned = 0.0
+	shade_state = "wander"
+	shade_drain_lamp = -1
+	shade_push_lamp = -1
 	game_state = "playing"
 	result_label.text = ""
 	_play_sfx("shade")
@@ -508,6 +611,96 @@ func _build_night_map() -> void:
 		water.position = Vector3(water_center.x, -3.2, water_center.z)
 		water.material_override = water_material
 		map_root.add_child(water)
+	_add_island_decor()
+
+
+func _add_island_decor() -> void:
+	var decor_rng := RandomNumberGenerator.new()
+	decor_rng.seed = 8200 + night
+	var centers: Array[Vector3] = [Vector3.ZERO]
+	if night == 2: centers.append(Vector3(70, 0, 0))
+	var lamp_positions := _night_lantern_positions()
+	for center in centers:
+		for i in range(24):
+			var angle := decor_rng.randf_range(0.0, TAU)
+			var inner_radius := ground_radius * 0.5
+			var outer_radius := ground_radius * 0.82
+			if night == 2:
+				inner_radius = 15.0
+				outer_radius = 23.0
+			var radius := decor_rng.randf_range(inner_radius, outer_radius)
+			var pos := center + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
+			var near_lamp := false
+			for lamp_pos in lamp_positions:
+				if _flat_distance(pos, lamp_pos) < 5.0:
+					near_lamp = true
+					break
+			if near_lamp or _flat_distance(pos, player.position) < 7.0: continue
+			var kind := i % 4
+			if kind == 0:
+				_add_lowpoly_tree(pos, decor_rng.randf_range(3.2, 4.8), decor_rng)
+			elif kind == 1:
+				_add_lowpoly_rock(pos, decor_rng)
+			else:
+				_add_grass_cluster(pos, decor_rng)
+
+
+func _add_lowpoly_tree(pos: Vector3, height: float, decor_rng: RandomNumberGenerator) -> void:
+	var tree := Node3D.new()
+	tree.position = pos
+	tree.rotation.y = decor_rng.randf_range(0.0, TAU)
+	map_root.add_child(tree)
+	var trunk := MeshInstance3D.new()
+	var trunk_mesh := CylinderMesh.new()
+	trunk_mesh.top_radius = 0.16
+	trunk_mesh.bottom_radius = 0.27
+	trunk_mesh.height = height
+	trunk_mesh.radial_segments = 6
+	trunk.mesh = trunk_mesh
+	trunk.position.y = height * 0.5
+	trunk.material_override = _material(Color("76503b"), 0.0)
+	tree.add_child(trunk)
+	var foliage_colors := [Color("3d8266"), Color("4e956e"), Color("39745f")]
+	for layer in range(3):
+		var crown := MeshInstance3D.new()
+		var crown_mesh := CylinderMesh.new()
+		crown_mesh.top_radius = 0.0
+		crown_mesh.bottom_radius = height * (0.22 - layer * 0.035)
+		crown_mesh.height = height * 0.48
+		crown_mesh.radial_segments = 7
+		crown.mesh = crown_mesh
+		crown.position.y = height * (0.58 + layer * 0.16)
+		crown.material_override = _material(foliage_colors[layer], 0.0)
+		tree.add_child(crown)
+
+
+func _add_lowpoly_rock(pos: Vector3, decor_rng: RandomNumberGenerator) -> void:
+	var rock := MeshInstance3D.new()
+	var rock_mesh := SphereMesh.new()
+	rock_mesh.radial_segments = 7
+	rock_mesh.rings = 4
+	rock.mesh = rock_mesh
+	rock.position = pos + Vector3(0, 0.25, 0)
+	rock.scale = Vector3(decor_rng.randf_range(0.7, 1.6), decor_rng.randf_range(0.45, 0.9), decor_rng.randf_range(0.65, 1.35))
+	rock.rotation.y = decor_rng.randf_range(0.0, TAU)
+	rock.material_override = _material([Color("66746a"), Color("777a70"), Color("596b67")][decor_rng.randi_range(0, 2)], 0.0)
+	map_root.add_child(rock)
+
+
+func _add_grass_cluster(pos: Vector3, decor_rng: RandomNumberGenerator) -> void:
+	var grass_colors := [Color("82a85f"), Color("b4a85c"), Color("5f9a72")]
+	for blade in range(5):
+		var tuft := MeshInstance3D.new()
+		var blade_mesh := CylinderMesh.new()
+		blade_mesh.top_radius = 0.0
+		blade_mesh.bottom_radius = 0.09
+		blade_mesh.height = decor_rng.randf_range(0.45, 0.9)
+		blade_mesh.radial_segments = 5
+		tuft.mesh = blade_mesh
+		tuft.position = pos + Vector3(decor_rng.randf_range(-0.3, 0.3), blade_mesh.height * 0.5, decor_rng.randf_range(-0.3, 0.3))
+		tuft.rotation.z = decor_rng.randf_range(-0.25, 0.25)
+		tuft.material_override = _material(grass_colors[decor_rng.randi_range(0, grass_colors.size() - 1)], 0.0)
+		map_root.add_child(tuft)
 
 
 func _add_platform(center: Vector3, radius: float, top: float, depth: float, color: Color) -> void:
@@ -600,6 +793,28 @@ func _make_lantern(index: int) -> Node3D:
 	post.position.y = 1.2
 	post.material_override = _material(Color("704c43"), 0.0)
 	root.add_child(post)
+	var lantern_base := MeshInstance3D.new()
+	var base_mesh := CylinderMesh.new()
+	base_mesh.top_radius = 0.34
+	base_mesh.bottom_radius = 0.42
+	base_mesh.height = 0.18
+	base_mesh.radial_segments = 8
+	lantern_base.mesh = base_mesh
+	lantern_base.position.y = 2.28
+	lantern_base.material_override = _material(Color("d39a51"), 0.0)
+	root.add_child(lantern_base)
+	for side in [-1.0, 1.0]:
+		for forward in [-1.0, 1.0]:
+			var cage_bar := MeshInstance3D.new()
+			var bar_mesh := CylinderMesh.new()
+			bar_mesh.top_radius = 0.025
+			bar_mesh.bottom_radius = 0.035
+			bar_mesh.height = 0.8
+			bar_mesh.radial_segments = 5
+			cage_bar.mesh = bar_mesh
+			cage_bar.position = Vector3(side * 0.28, 2.69, forward * 0.28)
+			cage_bar.material_override = _material(Color("d39a51"), 0.0)
+			root.add_child(cage_bar)
 	var flame := MeshInstance3D.new()
 	var flame_mesh := SphereMesh.new()
 	flame_mesh.radius = 0.38
@@ -608,6 +823,16 @@ func _make_lantern(index: int) -> Node3D:
 	flame.position.y = 2.75
 	flame.material_override = _material(Color("6d6271"), 0.0)
 	root.add_child(flame)
+	var lantern_roof := MeshInstance3D.new()
+	var roof_mesh := CylinderMesh.new()
+	roof_mesh.top_radius = 0.0
+	roof_mesh.bottom_radius = 0.42
+	roof_mesh.height = 0.32
+	roof_mesh.radial_segments = 8
+	lantern_roof.mesh = roof_mesh
+	lantern_roof.position.y = 3.22
+	lantern_roof.material_override = _material(Color("8c5840"), 0.0)
+	root.add_child(lantern_roof)
 	var light := OmniLight3D.new()
 	light.position.y = 2.8
 	light.light_color = Color("ffb94f")
@@ -618,7 +843,7 @@ func _make_lantern(index: int) -> Node3D:
 	var bar_mesh := BoxMesh.new()
 	bar_mesh.size = Vector3(1.0, 0.09, 0.12)
 	fuel_bar.mesh = bar_mesh
-	fuel_bar.position = Vector3(0, 3.45, 0)
+	fuel_bar.position = Vector3(0, 3.78, 0)
 	fuel_bar.material_override = _material(Color("8be08b"), 0.8)
 	root.add_child(fuel_bar)
 	root.set_meta("flame", flame)
@@ -635,9 +860,28 @@ func _make_mote(pos: Vector3) -> Node3D:
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.18
 	mesh.height = 0.36
+	mesh.radial_segments = 8
+	mesh.rings = 4
 	orb.mesh = mesh
 	orb.material_override = _material(Color("ffe783"), 2.0)
 	node.add_child(orb)
+	var crystal := MeshInstance3D.new()
+	var crystal_mesh := CylinderMesh.new()
+	crystal_mesh.top_radius = 0.0
+	crystal_mesh.bottom_radius = 0.12
+	crystal_mesh.height = 0.46
+	crystal_mesh.radial_segments = 5
+	crystal.mesh = crystal_mesh
+	crystal.material_override = _material(Color("fff2ad"), 2.4)
+	node.add_child(crystal)
+	var halo := MeshInstance3D.new()
+	var halo_mesh := TorusMesh.new()
+	halo_mesh.inner_radius = 0.24
+	halo_mesh.outer_radius = 0.29
+	halo.mesh = halo_mesh
+	halo.rotation.x = deg_to_rad(72.0)
+	halo.material_override = _material(Color("f3c95f"), 1.2)
+	node.add_child(halo)
 	var light := OmniLight3D.new()
 	light.light_color = Color("ffdb73")
 	light.light_energy = 0.45
@@ -663,6 +907,26 @@ func _make_drifter() -> Node3D:
 	orb.mesh = mesh
 	orb.material_override = _material(Color("8fa3b8"), 0.8)
 	node.add_child(orb)
+	for side in [-1.0, 1.0]:
+		var eye := MeshInstance3D.new()
+		var eye_mesh := SphereMesh.new()
+		eye_mesh.radius = 0.1
+		eye_mesh.height = 0.14
+		eye.mesh = eye_mesh
+		eye.position = Vector3(side * 0.2, 0.16, -0.48)
+		eye.material_override = _material(Color("ffe8ac"), 1.8)
+		node.add_child(eye)
+		var fin := MeshInstance3D.new()
+		var fin_mesh := CylinderMesh.new()
+		fin_mesh.top_radius = 0.0
+		fin_mesh.bottom_radius = 0.22
+		fin_mesh.height = 0.5
+		fin_mesh.radial_segments = 5
+		fin.mesh = fin_mesh
+		fin.position = Vector3(side * 0.47, 0.12, 0.0)
+		fin.rotation.z = deg_to_rad(side * -55.0)
+		fin.material_override = _material(Color("71899f"), 0.45)
+		node.add_child(fin)
 	add_child(node)
 	return node
 
@@ -781,6 +1045,8 @@ func _move_player(delta: float) -> void:
 				player.velocity.y = 7.0
 				_play_sfx("jump")
 	player.move_and_slide()
+	if direction.length_squared() > 0.01:
+		player.rotation.y = atan2(-direction.x, -direction.z)
 	if night == 2 and not player.has_meta("pad_lock"):
 		for pair in [[Vector3(20, 0, 18), Vector3(70, 0, 0)], [Vector3(50, 0, -18), Vector3.ZERO]]:
 			if _flat_distance(player.position, pair[0]) <= 1.0 and player.is_on_floor():
@@ -825,7 +1091,8 @@ func _update_motes(delta: float) -> void:
 		var mote: Dictionary = motes[i]
 		var node: Node3D = mote["node"]
 		node.position.y = float(mote["pos"].y) + 0.45 + sin(Time.get_ticks_msec() * 0.002 + i) * 0.12
-		if carried < 10 and _flat_distance(player.position, mote["pos"]) <= 1.0 and absf(player.position.y - mote["pos"].y) <= 1.5:
+		node.rotation.y = Time.get_ticks_msec() * 0.0007 + i
+		if carried < mini(20, 10 + successful_lights * 2) and _flat_distance(player.position, mote["pos"]) <= 1.0 and absf(player.position.y - mote["pos"].y) <= 1.5:
 			carried += 1
 			_play_sfx("pickup")
 			node.queue_free()
@@ -989,6 +1256,7 @@ func _try_pulse() -> void:
 	if player.position.distance_to(shade.position) <= 5.0:
 		var was_draining := shade_drain_lamp >= 0
 		shade_stunned = 2.0
+		shade_state = "stunned"
 		shade_drain_lamp = -1
 		shade_push_lamp = -1
 		var away := shade.position - player.position
@@ -1015,13 +1283,18 @@ func _try_pulse() -> void:
 
 
 func _update_shade(delta: float) -> void:
+	shade.rotation.y += delta * 0.55
+	shade.get_child(0).position.y = 0.08 + sin(Time.get_ticks_msec() * 0.004) * 0.14
+	shade.get_child(2).position.y = sin(Time.get_ticks_msec() * 0.004) * 0.1
 	var outline: MeshInstance3D = shade.get_child(1)
 	if bool(outline.get_meta("colorblind", false)) != colorblind_mode:
 		outline.material_override = _material(Color("00b3ff") if colorblind_mode else Color("7a3cff"), 1.0)
 		outline.set_meta("colorblind", colorblind_mode)
 	if shade_stunned > 0:
+		shade_state = "stunned"
 		shade_drain_lamp = -1
 		return
+	if shade_state == "stunned": shade_state = "wander"
 	if shade_push_lamp >= 0 and shade_push_lamp < lanterns.size():
 		var pushed_lamp: Dictionary = lanterns[shade_push_lamp]
 		var outward: Vector3 = shade.position - pushed_lamp["pos"]
@@ -1031,34 +1304,42 @@ func _update_shade(delta: float) -> void:
 			shade.position += outward.normalized() * 12.0 * delta
 			return
 		shade_push_lamp = -1
-	var weak_index := -1
-	var weak_distance := INF
-	for i in range(lanterns.size()):
-		var lantern: Dictionary = lanterns[i]
-		if lantern["lit"] and float(lantern["fuel"]) < 30.0 and _flat_distance(shade.position, lantern["pos"]) < weak_distance:
-			weak_index = i
-			weak_distance = _flat_distance(shade.position, lantern["pos"])
-	if weak_index >= 0:
-		var weak_lamp: Dictionary = lanterns[weak_index]
-		var to_lamp: Vector3 = weak_lamp["pos"] - shade.position
-		to_lamp.y = 0
-		if to_lamp.length() > 2.0:
-			shade_drain_lamp = -1
-			shade.position += to_lamp.normalized() * 4.0 * delta
-		else:
-			shade_drain_lamp = weak_index
-			weak_lamp["fuel"] = maxf(0.0, float(weak_lamp["fuel"]) - 5.0 * delta)
-		return
-	shade_drain_lamp = -1
-	for lantern in lanterns:
-		if lantern["lit"] and float(lantern["fuel"]) >= 30.0 and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
-			return
 	var direction: Vector3 = player.position - shade.position
 	direction.y = 0
 	var distance := direction.length()
-	if distance > 18.0: return
-	if distance <= 12.0 and direction.length_squared() > 0.01:
-		shade.position += direction.normalized() * (4.5 if night == 3 else 4.0) * delta
+	if shade_state == "drain":
+		var drain_index := shade_drain_lamp
+		if drain_index < 0 or drain_index >= lanterns.size() or not lanterns[drain_index]["lit"] or float(lanterns[drain_index]["fuel"]) >= 30.0 or _flat_distance(shade.position, lanterns[drain_index]["pos"]) > 2.0:
+			shade_state = "wander"
+			shade_drain_lamp = -1
+		elif distance <= 6.0:
+			shade_state = "chase"
+			shade_drain_lamp = -1
+		else:
+			lanterns[drain_index]["fuel"] = maxf(0.0, float(lanterns[drain_index]["fuel"]) - 5.0 * delta)
+			return
+	if shade_state == "chase" and distance > SHADE_LOSE_RADIUS: shade_state = "wander"
+	if shade_state == "wander" and distance <= SHADE_DETECT_RADIUS: shade_state = "chase"
+	if shade_state == "wander":
+		shade_drain_lamp = -1
+		var target_index := _nearest_shade_target(true)
+		if target_index < 0: target_index = _nearest_shade_target(false)
+		if target_index >= 0:
+			var target_lamp: Dictionary = lanterns[target_index]
+			var to_target: Vector3 = target_lamp["pos"] - shade.position
+			to_target.y = 0
+			if target_lamp["lit"] and float(target_lamp["fuel"]) < 30.0 and to_target.length() <= 2.0:
+				shade_state = "drain"
+				shade_drain_lamp = target_index
+				return
+			if to_target.length() > 2.0:
+				shade.position += to_target.normalized() * SHADE_SPEED * delta
+				return
+	if shade_state == "chase" and direction.length_squared() > 0.01:
+		for lantern in lanterns:
+			if lantern["lit"] and float(lantern["fuel"]) >= 30.0 and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
+				return
+		shade.position += direction.normalized() * (4.5 if night == 3 else SHADE_SPEED) * delta
 	if invulnerable <= 0 and _flat_distance(player.position, shade.position) <= 1.0 and absf(player.position.y - shade.position.y) <= 1.5:
 		flames -= 1
 		_play_sfx("hit")
@@ -1076,6 +1357,22 @@ func _update_shade(delta: float) -> void:
 			var offset := Vector3(cos(angle) * radius, 0.45, sin(angle) * radius)
 			var pos: Vector3 = player.position + offset
 			motes.append({"id": "M%d" % (motes.size() + 1), "pos": pos, "node": _make_mote(pos)})
+		shade_state = "stunned"
+		shade_drain_lamp = -1
+
+
+func _nearest_shade_target(weak_only: bool) -> int:
+	var best_index := -1
+	var best_distance := INF
+	for i in range(lanterns.size()):
+		var lamp: Dictionary = lanterns[i]
+		var eligible := bool(lamp["lit"]) and float(lamp["fuel"]) < 30.0 if weak_only else not bool(lamp["lit"])
+		if not eligible: continue
+		var distance := _flat_distance(shade.position, lamp["pos"])
+		if distance < best_distance or (is_equal_approx(distance, best_distance) and (best_index < 0 or str(lamp["id"]) < str(lanterns[best_index]["id"]))):
+			best_index = i
+			best_distance = distance
+	return best_index
 
 
 func _check_end() -> void:

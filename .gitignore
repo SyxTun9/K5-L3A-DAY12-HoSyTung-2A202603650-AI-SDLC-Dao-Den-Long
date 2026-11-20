@@ -1,6 +1,10 @@
 # Godot generated cache
 .godot/
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Local diagnostic outputs; checked evidence lives under docs/proof/
 /godot-smoke.log
 /godot-game-smoke.log
