@@ -1,14 +1,12 @@
 extends Node3D
 
-const ISLAND_RADIUS := 30.0
-const LANTERN_POSITIONS := [
-	Vector3(0, 0, 23), Vector3(21.85, 0, 7.1), Vector3(13.5, 0, -18.6),
-	Vector3(-13.5, 0, -18.6), Vector3(-21.85, 0, 7.1)
-]
+const HZ := 60.0
+const NIGHT_NAMES := ["Đảo Bến", "Đảo Cau", "Đảo Chuông"]
 
 var rng := RandomNumberGenerator.new()
 var player: CharacterBody3D
 var game_camera: Camera3D
+var world_environment: WorldEnvironment
 var shade: Node3D
 var hud: Label
 var result_label: Label
@@ -24,13 +22,37 @@ var shade_stunned := 0.0
 var game_state := "playing"
 var camera_yaw := 0.0
 var camera_pitch := 1.27
+var night := 1
+var total_score := 0
+var dash_cooldown := 0.0
+var dash_time := 0.0
+var dash_direction := Vector3.FORWARD
+var charms_left := 0.0
+var map_root: Node3D
+var ground_radius := 40.0
+var sim_ticks := 0
+var drifters: Array[Dictionary] = []
+var charms: Array[Dictionary] = []
+var wind_dir := Vector3.ZERO
+var wind_active := false
+var gust_warned := false
+var pause_panel: PanelContainer
+var settings_box: VBoxContainer
+var mouse_sensitivity := 0.004
+var master_volume_db := 0.0
+var bgm_player: AudioStreamPlayer
+var countdown_mark := -1
 
 
 func _ready() -> void:
 	rng.randomize()
 	_setup_inputs()
+	_load_settings()
 	_build_world()
-	_start_round()
+	_build_night_map()
+	_start_background_music()
+	game_state = "menu"
+	result_label.text = "ĐẢO ĐÈN LỒNG\nĐêm tối đang phủ lên ba hòn đảo\nNhấn Enter để bắt đầu"
 
 
 func _setup_inputs() -> void:
@@ -41,7 +63,11 @@ func _setup_inputs() -> void:
 	_add_key_action("jump", KEY_SPACE)
 	_add_key_action("interact", KEY_E)
 	_add_key_action("pulse", KEY_Q)
+	_add_key_action("dash", KEY_SHIFT)
 	_add_key_action("restart", KEY_R)
+	_add_key_action("pause", KEY_P)
+	_add_key_action("pause", KEY_ESCAPE)
+	_add_key_action("start", KEY_ENTER)
 
 
 func _add_key_action(action: String, keycode: Key) -> void:
@@ -53,15 +79,15 @@ func _add_key_action(action: String, keycode: Key) -> void:
 
 
 func _build_world() -> void:
-	var environment := WorldEnvironment.new()
+	world_environment = WorldEnvironment.new()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color("101226")
+	env.background_color = Color("0e1430")
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color("77718f")
 	env.ambient_light_energy = 0.55
-	environment.environment = env
-	add_child(environment)
+	world_environment.environment = env
+	add_child(world_environment)
 
 	var moonlight := DirectionalLight3D.new()
 	moonlight.rotation_degrees = Vector3(-55, -25, 0)
@@ -69,43 +95,16 @@ func _build_world() -> void:
 	moonlight.light_energy = 0.65
 	add_child(moonlight)
 
-	var island := MeshInstance3D.new()
-	var island_mesh := CylinderMesh.new()
-	island_mesh.top_radius = ISLAND_RADIUS
-	island_mesh.bottom_radius = ISLAND_RADIUS + 1.0
-	island_mesh.height = 2.0
-	island_mesh.radial_segments = 64
-	island.mesh = island_mesh
-	island.position.y = -1.0
-	island.material_override = _material(Color("334b55"), 0.0)
-	add_child(island)
-	var island_body := StaticBody3D.new()
-	var island_collision := CollisionShape3D.new()
-	var island_shape := CylinderShape3D.new()
-	island_shape.radius = ISLAND_RADIUS
-	island_shape.height = 2.0
-	island_collision.shape = island_shape
-	island_collision.position.y = -1.0
-	island_body.add_child(island_collision)
-	add_child(island_body)
-
-	var rim := MeshInstance3D.new()
-	var rim_mesh := TorusMesh.new()
-	rim_mesh.inner_radius = ISLAND_RADIUS - 0.6
-	rim_mesh.outer_radius = ISLAND_RADIUS + 0.3
-	rim_mesh.rings = 64
-	rim_mesh.ring_segments = 12
-	rim.mesh = rim_mesh
-	rim.position.y = -0.25
-	rim.material_override = _material(Color("466f78"), 0.1)
-	add_child(rim)
+	map_root = Node3D.new()
+	map_root.name = "NightMap"
+	add_child(map_root)
 
 	var water := MeshInstance3D.new()
 	var water_mesh := PlaneMesh.new()
-	water_mesh.size = Vector2(180, 180)
+	water_mesh.size = Vector2(260, 200)
 	water.mesh = water_mesh
 	water.position.y = -3.2
-	water.material_override = _material(Color("111b36"), 0.0)
+	water.material_override = _material(Color("12384a"), 0.0)
 	add_child(water)
 
 	var star_rng := RandomNumberGenerator.new()
@@ -122,7 +121,7 @@ func _build_world() -> void:
 
 	player = CharacterBody3D.new()
 	player.name = "May"
-	player.position = Vector3(0, 0.05, 0)
+	player.position = Vector3(0, 6.05, 0) if night == 3 else Vector3(0, 0.05, 0)
 	var capsule := CollisionShape3D.new()
 	var capsule_shape := CapsuleShape3D.new()
 	capsule_shape.radius = 0.42
@@ -214,9 +213,156 @@ func _build_hud() -> void:
 	result_label.add_theme_font_size_override("font_size", 34)
 	result_label.add_theme_color_override("font_color", Color("ffe2a0"))
 	layer.add_child(result_label)
+	pause_panel = PanelContainer.new()
+	pause_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	pause_panel.custom_minimum_size = Vector2(360, 300)
+	layer.add_child(pause_panel)
+	var menu := VBoxContainer.new()
+	pause_panel.add_child(menu)
+	var title := Label.new()
+	title.text = "TẠM DỪNG"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	menu.add_child(title)
+	var resume_button := Button.new()
+	resume_button.text = "Tiếp tục"
+	resume_button.pressed.connect(_resume_game)
+	menu.add_child(resume_button)
+	var restart_button := Button.new()
+	restart_button.text = "Chơi lại đêm này"
+	restart_button.pressed.connect(_restart_night)
+	menu.add_child(restart_button)
+	var settings_button := Button.new()
+	settings_button.text = "Cài đặt âm lượng / độ nhạy"
+	settings_button.pressed.connect(func(): settings_box.visible = not settings_box.visible)
+	menu.add_child(settings_button)
+	settings_box = VBoxContainer.new()
+	settings_box.visible = false
+	menu.add_child(settings_box)
+	var volume_label := Label.new()
+	volume_label.text = "Âm lượng tổng"
+	settings_box.add_child(volume_label)
+	var volume_slider := HSlider.new()
+	volume_slider.min_value = -40.0
+	volume_slider.max_value = 0.0
+	volume_slider.value = master_volume_db
+	volume_slider.value_changed.connect(_on_volume_changed)
+	settings_box.add_child(volume_slider)
+	var sensitivity_label := Label.new()
+	sensitivity_label.text = "Độ nhạy chuột"
+	settings_box.add_child(sensitivity_label)
+	var sensitivity_slider := HSlider.new()
+	sensitivity_slider.min_value = 0.001
+	sensitivity_slider.max_value = 0.01
+	sensitivity_slider.step = 0.0005
+	sensitivity_slider.value = mouse_sensitivity
+	sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
+	settings_box.add_child(sensitivity_slider)
+	var menu_button := Button.new()
+	menu_button.text = "Về màn hình chính"
+	menu_button.pressed.connect(_return_to_menu)
+	menu.add_child(menu_button)
+	pause_panel.visible = false
+
+
+func _load_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load("user://settings.cfg") == OK:
+		master_volume_db = float(config.get_value("audio", "master_db", 0.0))
+		mouse_sensitivity = float(config.get_value("input", "mouse_sensitivity", 0.004))
+	AudioServer.set_bus_volume_db(0, master_volume_db)
+
+
+func _save_settings() -> void:
+	var config := ConfigFile.new()
+	config.set_value("audio", "master_db", master_volume_db)
+	config.set_value("input", "mouse_sensitivity", mouse_sensitivity)
+	config.save("user://settings.cfg")
+
+
+func _on_volume_changed(value: float) -> void:
+	master_volume_db = value
+	AudioServer.set_bus_volume_db(0, value)
+	_save_settings()
+
+
+func _on_sensitivity_changed(value: float) -> void:
+	mouse_sensitivity = value
+	_save_settings()
+
+
+func _resume_game() -> void:
+	game_state = "playing"
+	pause_panel.visible = false
+	result_label.text = ""
+
+
+func _restart_night() -> void:
+	pause_panel.visible = false
+	_start_round()
+
+
+func _return_to_menu() -> void:
+	pause_panel.visible = false
+	night = 1
+	total_score = 0
+	game_state = "menu"
+	result_label.text = "ĐẢO ĐÈN LỒNG\nĐêm tối đang phủ lên ba hòn đảo\nNhấn Enter để bắt đầu"
+
+
+func _make_tone(frequency: float, duration: float, looping: bool = false) -> AudioStreamWAV:
+	const SAMPLE_RATE := 22050
+	var frame_count := int(SAMPLE_RATE * duration)
+	var pcm := PackedByteArray()
+	pcm.resize(frame_count * 2)
+	for i in range(frame_count):
+		var t := float(i) / SAMPLE_RATE
+		var envelope := 1.0
+		if not looping:
+			envelope = pow(maxf(0.0, 1.0 - float(i) / frame_count), 2.0)
+		var signal_value := sin(TAU * frequency * t) + 0.22 * sin(TAU * frequency * 1.5 * t)
+		pcm.encode_s16(i * 2, int(clampf(signal_value * envelope * 10000.0, -32767.0, 32767.0)))
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = SAMPLE_RATE
+	stream.stereo = false
+	stream.data = pcm
+	if looping:
+		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		stream.loop_end = frame_count
+	return stream
+
+
+func _start_background_music() -> void:
+	bgm_player = AudioStreamPlayer.new()
+	bgm_player.name = "ProceduralNightMusic"
+	bgm_player.stream = _make_tone(110.0, 4.0, true)
+	bgm_player.volume_db = -28.0
+	add_child(bgm_player)
+	bgm_player.play()
+
+
+func _play_sfx(kind: String) -> void:
+	var tones := {
+		"pickup": [880.0, 0.10], "deposit": [540.0, 0.12], "lamp": [740.0, 0.32],
+		"pulse": [240.0, 0.28], "hit": [130.0, 0.30], "jump": [430.0, 0.08],
+		"dash": [360.0, 0.12], "win": [920.0, 0.60], "loss": [170.0, 0.55],
+		"warning": [560.0, 0.20], "shade": [150.0, 0.22]
+	}
+	if not tones.has(kind): return
+	var tone: Array = tones[kind]
+	var player_sfx := AudioStreamPlayer.new()
+	player_sfx.stream = _make_tone(float(tone[0]), float(tone[1]))
+	player_sfx.volume_db = -8.0
+	add_child(player_sfx)
+	player_sfx.finished.connect(player_sfx.queue_free)
+	player_sfx.play()
 
 
 func _start_round() -> void:
+	pause_panel.visible = false
+	for child in map_root.get_children():
+		child.queue_free()
+	_build_night_map()
 	for lantern in lanterns:
 		if is_instance_valid(lantern.get("node")):
 			lantern["node"].queue_free()
@@ -224,37 +370,201 @@ func _start_round() -> void:
 		if is_instance_valid(mote.get("node")):
 			mote["node"].queue_free()
 	lanterns.clear()
-	for i in range(LANTERN_POSITIONS.size()):
+	var lamp_positions := _night_lantern_positions()
+	for i in range(lamp_positions.size()):
 		lanterns.append({
-			"id": "L%d" % (i + 1), "pos": LANTERN_POSITIONS[i],
+			"id": "L%d" % (i + 1), "pos": lamp_positions[i],
 			"deposited": 0, "lit": false, "node": _make_lantern(i)
 		})
 
 	motes.clear()
-	for i in range(36):
-		var angle := rng.randf_range(0.0, TAU)
-		var radius := rng.randf_range(4.0, 25.0)
-		var pos := Vector3(cos(angle) * radius, 0.45, sin(angle) * radius)
+	var points := _night_mote_points()
+	var point_order: Array[int] = []
+	for i in range(points.size()): point_order.append(i)
+	point_order.shuffle()
+	for i in range(mini(20, point_order.size())):
+		var pos: Vector3 = points[point_order[i]]
 		motes.append({"id": "M%d" % (i + 1), "pos": pos, "node": _make_mote(pos)})
 
 	player.position = Vector3(0, 0.05, 0)
 	player.velocity = Vector3.ZERO
-	shade.position = Vector3(12, 0.7, 12)
+	shade.position = _night_shade_start()
 	flames = 3
 	carried = 0
 	score = 0
-	time_left = 300.0
+	time_left = [300.0, 330.0, 360.0][night - 1]
 	invulnerable = 0.0
 	pulse_cooldown = 0.0
+	dash_cooldown = 0.0
+	dash_time = 0.0
+	charms_left = 0.0
+	countdown_mark = -1
+	sim_ticks = 0
+	wind_active = false
+	gust_warned = false
+	for drifter in drifters:
+		if is_instance_valid(drifter.get("node")): drifter["node"].queue_free()
+	drifters.clear()
+	for charm in charms:
+		if is_instance_valid(charm.get("node")): charm["node"].queue_free()
+	charms.clear()
+	if night == 2:
+		_add_charm("C1", Vector3(35, 0, 0))
+	elif night == 3:
+		_add_charm("C1", Vector3(30, 0, 25))
+		_add_charm("C2", Vector3(-30, 0, 25))
 	shade_stunned = 0.0
 	game_state = "playing"
 	result_label.text = ""
+	_play_sfx("shade")
 	_update_hud()
+
+
+func _night_lantern_positions() -> Array[Vector3]:
+	match night:
+		1: return [Vector3(0, 0, 25), Vector3(23.8, 0, 7.7), Vector3(14.7, 0, -20.2), Vector3(-14.7, 0, -20.2), Vector3(-23.8, 0, 7.7)]
+		2: return [Vector3(0, 0, 20), Vector3(17, 0, -10), Vector3(-17, 0, -10), Vector3(70, 0, 20), Vector3(87, 0, -10), Vector3(53, 0, -10)]
+		_: return [Vector3(0, 6, 6), Vector3(18, 3, 10), Vector3(-18, 3, 10), Vector3(35, 0, -10), Vector3(-35, 0, -10), Vector3(20, 0, -35), Vector3(-20, 0, -35)]
+
+
+func _night_mote_points() -> Array[Vector3]:
+	var points: Array[Vector3] = []
+	if night == 1:
+		for i in range(8): points.append(_polar(12, i * 45.0))
+		for i in range(16): points.append(_polar(33, i * 22.5))
+	elif night == 2:
+		for cx in [0.0, 70.0]:
+			for i in range(4): points.append(_polar(10, i * 90.0, Vector3(cx, 0, 0)))
+			for i in range(8): points.append(_polar(22, i * 45.0, Vector3(cx, 0, 0)))
+	else:
+		for i in range(18): points.append(_polar(34, i * 20.0))
+		for i in range(8): points.append(_polar(18, 20.0 + i * 20.0, Vector3(0, 3, 0)))
+		for angle in [45.0, 135.0, 225.0, 315.0]: points.append(_polar(5, angle, Vector3(0, 6, 0)))
+	return points
+
+
+func _night_shade_start() -> Vector3:
+	if night == 1: return Vector3(30, 0.7, 22)
+	if night == 2: return Vector3(25, 0.7, 16)
+	return Vector3(39, 0.7, 18)
+
+
+func _polar(radius: float, degrees: float, center: Vector3 = Vector3.ZERO) -> Vector3:
+	var angle := deg_to_rad(degrees)
+	return center + Vector3(cos(angle) * radius, 0, sin(angle) * radius)
+
+
+func _build_night_map() -> void:
+	var water_material := _material(Color("12384a"), 0.0)
+	if night == 1:
+		ground_radius = 40.0
+		_add_platform(Vector3.ZERO, 40.0, 0.0, 2.0, Color("2f5d50"))
+	elif night == 2:
+		ground_radius = 28.0
+		_add_platform(Vector3.ZERO, 28.0, 0.0, 2.0, Color("2f5d50"))
+		_add_platform(Vector3(70, 0, 0), 28.0, 0.0, 2.0, Color("2f5d50"))
+		_add_box_platform(Vector3(35, -0.1, 0), Vector3(18, 0.2, 4), Color("6b4a2f"))
+		for pad_pos in [Vector3(20, 0.12, 18), Vector3(50, 0.12, -18)]:
+			_add_marker(pad_pos, Color("f2c14e"), 1.15)
+	else:
+		ground_radius = 45.0
+		_add_platform(Vector3.ZERO, 45.0, 0.0, 2.0, Color("2f5d50"))
+		_add_platform(Vector3(0, 3, 0), 24.0, 3.0, 0.65, Color("c9b48a"))
+		_add_platform(Vector3(0, 6, 0), 8.0, 6.0, 0.65, Color("2f5d50"))
+		_add_ramp(30.0)
+		_add_ramp(150.0)
+		_add_box_platform(Vector3(0, 10, 0), Vector3(4, 8, 4), Color("6b4a2f"))
+		_add_marker(Vector3(0, 3.12, 13), Color("f2c14e"), 1.1)
+	for water_center in [Vector3.ZERO, Vector3(70, 0, 0)]:
+		var water := MeshInstance3D.new()
+		var mesh := PlaneMesh.new()
+		mesh.size = Vector2(280, 220)
+		water.mesh = mesh
+		water.position = Vector3(water_center.x, -3.2, water_center.z)
+		water.material_override = water_material
+		map_root.add_child(water)
+
+
+func _add_platform(center: Vector3, radius: float, top: float, depth: float, color: Color) -> void:
+	var root := Node3D.new()
+	root.position = center + Vector3(0, top, 0)
+	map_root.add_child(root)
+	var mesh_node := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = radius
+	mesh.bottom_radius = radius + 1.0
+	mesh.height = depth
+	mesh.radial_segments = 64
+	mesh_node.mesh = mesh
+	mesh_node.position.y = -depth * 0.5
+	mesh_node.material_override = _material(color, 0.0)
+	root.add_child(mesh_node)
+	var body := StaticBody3D.new()
+	var collision := CollisionShape3D.new()
+	var shape := CylinderShape3D.new()
+	shape.radius = radius
+	shape.height = depth
+	collision.shape = shape
+	collision.position.y = -depth * 0.5
+	body.add_child(collision)
+	root.add_child(body)
+
+
+func _add_box_platform(center: Vector3, size: Vector3, color: Color) -> void:
+	var body := StaticBody3D.new()
+	body.position = center
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision.shape = shape
+	body.add_child(collision)
+	map_root.add_child(body)
+	var mesh_node := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh_node.mesh = mesh
+	mesh_node.position = center
+	mesh_node.material_override = _material(color, 0.0)
+	map_root.add_child(mesh_node)
+
+
+func _add_marker(pos: Vector3, color: Color, radius: float) -> void:
+	var marker := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = radius
+	mesh.bottom_radius = radius
+	mesh.height = 0.25
+	marker.mesh = mesh
+	marker.position = pos
+	marker.material_override = _material(color, 1.2)
+	map_root.add_child(marker)
+
+
+func _add_ramp(angle_deg: float) -> void:
+	var angle := deg_to_rad(angle_deg)
+	var center := Vector3(cos(angle) * 27.0, 1.5, sin(angle) * 27.0)
+	var body := StaticBody3D.new()
+	body.position = center
+	body.rotation = Vector3(deg_to_rad(-26.565), deg_to_rad(90.0 - angle_deg), 0)
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(3.0, 0.35, 6.0)
+	collision.shape = shape
+	body.add_child(collision)
+	map_root.add_child(body)
+	var visual := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = shape.size
+	visual.mesh = mesh
+	visual.position = center
+	visual.rotation = body.rotation
+	visual.material_override = _material(Color("c9b48a"), 0.0)
+	map_root.add_child(visual)
 
 
 func _make_lantern(index: int) -> Node3D:
 	var root := Node3D.new()
-	root.position = LANTERN_POSITIONS[index]
+	root.position = _night_lantern_positions()[index]
 	add_child(root)
 	var post := MeshInstance3D.new()
 	var post_mesh := CylinderMesh.new()
@@ -303,6 +613,27 @@ func _make_mote(pos: Vector3) -> Node3D:
 	return node
 
 
+func _add_charm(id: String, pos: Vector3) -> void:
+	var node := _make_mote(pos + Vector3(0, 0.35, 0))
+	node.reparent(map_root)
+	var orb: MeshInstance3D = node.get_child(0)
+	orb.material_override = _material(Color("c8102e"), 2.0)
+	charms.append({"id": id, "pos": pos, "node": node, "available": true, "respawn": 0.0})
+
+
+func _make_drifter() -> Node3D:
+	var node := Node3D.new()
+	var orb := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.6
+	mesh.height = 1.2
+	orb.mesh = mesh
+	orb.material_override = _material(Color("8fa3b8"), 0.8)
+	node.add_child(orb)
+	add_child(node)
+	return node
+
+
 func _material(color: Color, emission: float) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
@@ -315,24 +646,67 @@ func _material(color: Color, emission: float) -> StandardMaterial3D:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-		camera_yaw -= event.relative.x * 0.004
-		camera_pitch = clampf(camera_pitch - event.relative.y * 0.0025, 0.95, 1.4)
+		camera_yaw -= event.relative.x * mouse_sensitivity
+		camera_pitch = clampf(camera_pitch - event.relative.y * mouse_sensitivity * 0.625, 0.95, 1.4)
 		_aim_camera()
 
 
 func _physics_process(delta: float) -> void:
+	if game_state == "menu":
+		if Input.is_action_just_pressed("start"):
+			game_state = "intro"
+			result_label.text = "ĐÊM %d — %s\nÔng Đặng nhờ Mây thắp lại những chiếc đèn trước bình minh.\nNhấn Enter để lên đường" % [night, NIGHT_NAMES[night - 1]]
+		return
+	if game_state == "intro":
+		if Input.is_action_just_pressed("start") or Input.is_action_just_pressed("restart"):
+			_start_round()
+		return
+	if game_state == "paused":
+		if Input.is_action_just_pressed("pause"):
+			_resume_game()
+		elif Input.is_action_just_pressed("restart"):
+			_start_round()
+		return
 	if game_state != "playing":
 		if Input.is_action_just_pressed("restart"):
-			_start_round()
+			if game_state == "won" and night < 3:
+				total_score += score
+				night += 1
+				game_state = "intro"
+				result_label.text = "ĐÊM %d — %s\nÔng Đặng chỉ đường sang hòn đảo tiếp theo.\nNhấn Enter để tiếp tục" % [night, NIGHT_NAMES[night - 1]]
+			elif game_state == "won" and night == 3:
+				var completed_score := total_score + score
+				night = 1
+				total_score = 0
+				game_state = "menu"
+				result_label.text = "BÌNH MINH TRÊN BA ĐẢO!\nTổng điểm: %d\nNhấn Enter để chơi lại" % completed_score
+			else:
+				_start_round()
+		return
+	if Input.is_action_just_pressed("pause"):
+		game_state = "paused"
+		pause_panel.visible = true
+		result_label.text = ""
 		return
 
 	time_left = maxf(0.0, time_left - delta)
+	sim_ticks += 1
+	var seconds_mark := ceili(time_left)
+	if seconds_mark <= 10 and seconds_mark != countdown_mark:
+		countdown_mark = seconds_mark
+		_play_sfx("warning")
 	invulnerable = maxf(0.0, invulnerable - delta)
 	pulse_cooldown = maxf(0.0, pulse_cooldown - delta)
+	dash_cooldown = maxf(0.0, dash_cooldown - delta)
+	dash_time = maxf(0.0, dash_time - delta)
+	charms_left = maxf(0.0, charms_left - delta)
 	shade_stunned = maxf(0.0, shade_stunned - delta)
 	_move_player(delta)
 	_aim_camera()
 	_update_motes(delta)
+	_update_charms(delta)
+	_update_drifters(delta)
+	_update_gust(delta)
 	_interact_lantern()
 	_try_pulse()
 	_update_shade(delta)
@@ -347,25 +721,59 @@ func _move_player(delta: float) -> void:
 	var direction := right * input_vector.x - forward * input_vector.y
 	if direction.length_squared() > 1.0:
 		direction = direction.normalized()
-	player.velocity.x = direction.x * 6.0
-	player.velocity.z = direction.z * 6.0
-	if not player.is_on_floor():
-		player.velocity.y -= 22.0 * delta
-	else:
+	if direction.length_squared() > 0.001:
+		dash_direction = direction.normalized()
+	if Input.is_action_just_pressed("dash") and dash_time <= 0.0 and (dash_cooldown <= 0.0 or charms_left > 0.0):
+		dash_direction = direction.normalized() if direction.length_squared() > 0.001 else forward
+		dash_time = 0.2
+		_play_sfx("dash")
+		if charms_left <= 0.0: dash_cooldown = 1.5
+	var pad_launch := player.has_meta("pad_lock")
+	if pad_launch:
+		player.velocity.y -= 20.0 * delta
+	elif dash_time > 0.0:
+		player.velocity.x = dash_direction.x * 14.0
+		player.velocity.z = dash_direction.z * 14.0
 		player.velocity.y = 0.0
-		if Input.is_action_just_pressed("jump"):
-			player.velocity.y = 7.0
+	else:
+		var run_speed := 7.2 if charms_left > 0.0 else 6.0
+		player.velocity.x = direction.x * run_speed
+		player.velocity.z = direction.z * run_speed
+		if not player.is_on_floor():
+			player.velocity.y -= 20.0 * delta
+		else:
+			player.velocity.y = 0.0
+			if Input.is_action_just_pressed("jump"):
+				player.velocity.y = 7.0
+				_play_sfx("jump")
 	player.move_and_slide()
-	var flat_position := Vector3(player.position.x, 0, player.position.z)
-	if flat_position.length() > ISLAND_RADIUS - 0.6:
-		var flat := flat_position.normalized()
-		player.position.x = flat.x * (ISLAND_RADIUS - 0.6)
-		player.position.z = flat.z * (ISLAND_RADIUS - 0.6)
+	if night == 2 and not player.has_meta("pad_lock"):
+		for pair in [[Vector3(20, 0, 18), Vector3(70, 0, 0)], [Vector3(50, 0, -18), Vector3.ZERO]]:
+			if _flat_distance(player.position, pair[0]) <= 1.0 and player.is_on_floor():
+				var launch: Vector3 = pair[1] - pair[0]
+				launch.y = 0
+				launch = launch.normalized() * 24.0
+				player.velocity = Vector3(launch.x, 14.0, launch.z)
+				player.set_meta("pad_lock", true)
+	elif night == 3 and not player.has_meta("pad_lock") and _flat_distance(player.position, Vector3(0, 3, 13)) <= 1.0 and player.is_on_floor():
+		player.velocity = Vector3(0, 12.0, -8.0)
+		player.set_meta("pad_lock", true)
+	if pad_launch and player.is_on_floor(): player.remove_meta("pad_lock")
+	if player.global_position.y < -10.0:
+		_play_sfx("hit")
+		flames -= 1
+		carried = 0
+		if flames <= 0:
+			game_state = "lost"
+		else:
+			player.position = Vector3.ZERO
+			player.velocity = Vector3.ZERO
+			invulnerable = 1.5
 
 
 func _aim_camera() -> void:
 	if is_instance_valid(game_camera) and is_instance_valid(player):
-		var distance := 24.0
+		var distance := 42.0 if night == 2 else 32.0
 		var horizontal := cos(camera_pitch) * distance
 		var vertical := sin(camera_pitch) * distance
 		var offset := Vector3(0, vertical, -horizontal).rotated(Vector3.UP, camera_yaw)
@@ -374,15 +782,89 @@ func _aim_camera() -> void:
 
 
 func _update_motes(delta: float) -> void:
+	if sim_ticks > 0 and sim_ticks % 240 == 0 and motes.size() < 30:
+		var spawn_pos := _polar(12.0 + float((sim_ticks / 240) % 2) * 21.0, float(sim_ticks % 360))
+		if night == 2 and sim_ticks % 2 == 0: spawn_pos.x += 70.0
+		var mote_node := _make_mote(spawn_pos)
+		motes.append({"id": "M%d" % (motes.size() + 1), "pos": spawn_pos, "node": mote_node})
 	for i in range(motes.size() - 1, -1, -1):
 		var mote: Dictionary = motes[i]
 		var node: Node3D = mote["node"]
-		node.position.y = 0.45 + sin(Time.get_ticks_msec() * 0.002 + i) * 0.12
-		if carried < 10 and _flat_distance(player.position, mote["pos"]) <= 1.5:
+		node.position.y = float(mote["pos"].y) + 0.45 + sin(Time.get_ticks_msec() * 0.002 + i) * 0.12
+		if carried < 10 and _flat_distance(player.position, mote["pos"]) <= 1.0 and absf(player.position.y - mote["pos"].y) <= 1.5:
 			carried += 1
-			score += 10
+			_play_sfx("pickup")
 			node.queue_free()
 			motes.remove_at(i)
+
+
+func _update_charms(delta: float) -> void:
+	for charm in charms:
+		if not charm["available"]:
+			charm["respawn"] = maxf(0.0, float(charm["respawn"]) - delta)
+			if charm["respawn"] <= 0.0:
+				charm["available"] = true
+				charm["node"].visible = true
+		elif _flat_distance(player.position, charm["pos"]) <= 1.0 and absf(player.position.y - charm["pos"].y) <= 1.5:
+			charm["available"] = false
+			charm["respawn"] = 45.0
+			charm["node"].visible = false
+			charms_left = 10.0
+
+
+func _update_drifters(delta: float) -> void:
+	if night >= 2 and sim_ticks > 0 and sim_ticks % 1200 == 0 and drifters.size() < 2:
+		var start := Vector3(-20, 0.6, 18) if night == 2 else Vector3(20, 0.6, -38)
+		var node := _make_drifter()
+		node.position = start
+		drifters.append({"node": node, "state": "idle", "stolen": 0, "ticks": 0.0})
+	for i in range(drifters.size() - 1, -1, -1):
+		var drifter: Dictionary = drifters[i]
+		var node: Node3D = drifter["node"]
+		if drifter["state"] == "removed":
+			drifter["ticks"] = maxf(0.0, float(drifter["ticks"]) - delta)
+			if drifter["ticks"] <= 0.0:
+				node.queue_free()
+				drifters.remove_at(i)
+			continue
+		var distance := _flat_distance(player.position, node.position)
+		if drifter["state"] == "idle" and carried >= 5 and distance <= 15.0:
+			drifter["state"] = "chase"
+		elif drifter["state"] == "chase" and (carried < 5 or distance > 22.5):
+			drifter["state"] = "idle"
+		var target: Vector3 = player.position if drifter["state"] == "chase" else node.position + Vector3(0.1, 0, 0)
+		if drifter["state"] == "flee":
+			target = node.position + (node.position - player.position).normalized() * 10.0
+		var speed := 7.0 if drifter["state"] in ["flee", "chase"] else 2.0
+		var toward := target - node.position
+		toward.y = 0
+		if toward.length_squared() > 0.01: node.position += toward.normalized() * speed * delta
+		if drifter["state"] == "chase" and distance <= 1.2:
+			var stolen := mini(3, carried)
+			carried -= stolen
+			drifter["stolen"] = stolen
+			drifter["state"] = "flee"
+			drifter["ticks"] = 4.0
+		if drifter["state"] == "flee":
+			drifter["ticks"] = maxf(0.0, float(drifter["ticks"]) - delta)
+			if drifter["ticks"] <= 0.0:
+				drifter["state"] = "removed"
+				drifter["ticks"] = 2.0
+
+
+func _update_gust(delta: float) -> void:
+	if night != 3: return
+	var phase := sim_ticks % 1800
+	wind_active = sim_ticks >= 1800 and phase < 300
+	if phase == 1680 and not gust_warned:
+		wind_dir = Vector3(rng.randf_range(-1.0, 1.0), 0, rng.randf_range(-1.0, 1.0)).normalized()
+		gust_warned = true
+		result_label.text = "CẢNH BÁO: GIÓ LỚN!"
+		_play_sfx("warning")
+	if phase == 0:
+		gust_warned = false
+		result_label.text = ""
+	if wind_active: player.velocity += wind_dir * 2.0 * delta
 
 
 func _interact_lantern() -> void:
@@ -397,13 +879,15 @@ func _interact_lantern() -> void:
 		if d < nearest_distance:
 			nearest_distance = d
 			nearest_index = i
-	if nearest_index < 0 or nearest_distance > 2.5 or carried <= 0:
+	if nearest_index < 0 or nearest_distance > 2.0 or carried <= 0:
 		return
 	var lantern: Dictionary = lanterns[nearest_index]
-	var amount := mini(5 - int(lantern["deposited"]), carried)
+	var amount := mini(10 - int(lantern["deposited"]), carried)
 	carried -= amount
 	lantern["deposited"] += amount
-	if int(lantern["deposited"]) >= 5:
+	score += amount * 10
+	_play_sfx("deposit")
+	if int(lantern["deposited"]) >= 10:
 		lantern["lit"] = true
 		score += 100
 		var root: Node3D = lantern["node"]
@@ -411,37 +895,55 @@ func _interact_lantern() -> void:
 		var light: OmniLight3D = root.get_meta("light")
 		flame.material_override = _material(Color("ffca5e"), 2.2)
 		light.light_energy = 2.4
+		_play_sfx("lamp")
 
 
 func _try_pulse() -> void:
-	if not Input.is_action_just_pressed("pulse") or pulse_cooldown > 0 or carried < 1:
+	if not Input.is_action_just_pressed("pulse") or pulse_cooldown > 0 or carried < 3:
 		return
-	carried -= 1
-	pulse_cooldown = 1.0
-	if _flat_distance(player.position, shade.position) <= 8.0:
+	carried -= 3
+	pulse_cooldown = 3.0
+	_play_sfx("pulse")
+	if player.position.distance_to(shade.position) <= 5.0:
 		shade_stunned = 2.0
 		var away := shade.position - player.position
 		away.y = 0
 		if away.length_squared() > 0:
-			shade.position += away.normalized() * 3.0
+			shade.position += away.normalized() * 4.0
 		score += 5
 		shade.get_child(0).material_override = _material(Color("8062a0"), 1.1)
 	else:
 		shade.get_child(0).material_override = _material(Color("241a3a"), 0.2)
+	for drifter in drifters:
+		var node: Node3D = drifter["node"]
+		if player.position.distance_to(node.position) > 5.0: continue
+		if drifter["state"] == "chase":
+			drifter["state"] = "flee"
+			drifter["ticks"] = 4.0
+		elif drifter["state"] == "flee" and int(drifter["stolen"]) > 0:
+			for i in range(int(drifter["stolen"])):
+				var dropped_pos: Vector3 = node.position + _polar(1.8 + rng.randf() * 0.6, rng.randf() * 360.0)
+				motes.append({"id": "M%d" % (motes.size() + 1), "pos": dropped_pos, "node": _make_mote(dropped_pos)})
+			drifter["stolen"] = 0
+			drifter["state"] = "removed"
+			drifter["ticks"] = 2.0
 
 
 func _update_shade(delta: float) -> void:
 	if shade_stunned > 0:
 		return
 	for lantern in lanterns:
-		if lantern["lit"] and _flat_distance(shade.position, lantern["pos"]) <= 3.0:
+		if lantern["lit"] and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
 			return
 	var direction: Vector3 = player.position - shade.position
 	direction.y = 0
-	if direction.length_squared() > 0.01:
-		shade.position += direction.normalized() * 2.5 * delta
-	if invulnerable <= 0 and _flat_distance(player.position, shade.position) <= 1.2:
+	var distance := direction.length()
+	if distance > 18.0: return
+	if distance <= 12.0 and direction.length_squared() > 0.01:
+		shade.position += direction.normalized() * (4.5 if night == 3 else 4.0) * delta
+	if invulnerable <= 0 and _flat_distance(player.position, shade.position) <= 1.0 and absf(player.position.y - shade.position.y) <= 1.5:
 		flames -= 1
+		_play_sfx("hit")
 		invulnerable = 1.5
 		shade_stunned = 1.5
 		var dropped := floori(carried * 0.5)
@@ -459,6 +961,11 @@ func _update_shade(delta: float) -> void:
 
 
 func _check_end() -> void:
+	if flames <= 0:
+		game_state = "lost"
+		_play_sfx("loss")
+		result_label.text = "ĐÊM TỐI QUÁ!\nĐiểm: %d\nNhấn R để thử lại" % score
+		return
 	var all_lit := true
 	for lantern in lanterns:
 		if not lantern["lit"]:
@@ -466,13 +973,15 @@ func _check_end() -> void:
 			break
 	if all_lit:
 		game_state = "won"
-		score += floori(time_left) + flames * 25
-		result_label.text = "ĐẢO SÁNG RỒI!\nĐiểm: %d\nNhấn R để chơi lại" % score
-	elif flames <= 0:
-		game_state = "lost"
-		result_label.text = "ĐÊM TỐI QUÁ!\nĐiểm: %d\nNhấn R để chơi lại" % score
+		_play_sfx("win")
+		score += floori(time_left) * 2 + flames * 50
+		if night < 3:
+			result_label.text = "%s ĐÃ SÁNG!\nĐiểm đêm: %d\nNhấn R sang đêm tiếp theo" % [NIGHT_NAMES[night - 1], score]
+		else:
+			result_label.text = "BÌNH MINH TRÊN BA ĐẢO!\nTổng điểm: %d\nNhấn R để chơi lại" % (total_score + score)
 	elif time_left <= 0:
 		game_state = "lost"
+		_play_sfx("loss")
 		result_label.text = "BÌNH MINH ĐÃ LÊN\nĐiểm: %d\nNhấn R để chơi lại" % score
 
 
@@ -481,7 +990,27 @@ func _update_hud() -> void:
 	for lantern in lanterns:
 		if lantern["lit"]:
 			lit_count += 1
-	hud.text = "ĐÊM 1 — ĐẢO BẾN\nĐom đóm: %d / 10     Đèn: %d / 5\nLửa: %s     Điểm: %d     Còn: %s\nWASD di chuyển · Space nhảy · E thắp đèn · Q tỏa sáng · Giữ chuột phải để xoay camera" % [carried, lit_count, "✦ ".repeat(maxi(flames, 0)), score, _format_time(time_left)]
+	var total_lamps := lanterns.size()
+	var shown_time := _format_time(time_left)
+	if time_left <= 30.0:
+		hud.add_theme_color_override("font_color", Color("ff5a5f"))
+	else:
+		hud.add_theme_color_override("font_color", Color("f5f1e6"))
+	var nearest_hint := ""
+	var nearest_distance := INF
+	for lamp in lanterns:
+		if lamp["lit"]: continue
+		var d := _flat_distance(player.position, lamp["pos"])
+		if d < nearest_distance:
+			nearest_distance = d
+			var delta: Vector3 = lamp["pos"] - player.position
+			delta = delta.rotated(Vector3.UP, -camera_yaw)
+			var arrow_index := posmod(roundi(wrapf(rad_to_deg(atan2(delta.x, delta.z)), 0.0, 360.0) / 45.0), 8)
+			var arrows := ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
+			nearest_hint = "%s Đèn gần nhất · E nạp (%d/10) · %.0fm" % [arrows[arrow_index], lamp["deposited"], d]
+	var mote_bar := "●".repeat(carried) + "○".repeat(10 - carried)
+	world_environment.environment.ambient_light_energy = 0.15 + 0.55 * float(lit_count) / float(maxi(total_lamps, 1))
+	hud.text = "ĐÊM %d — %s\nĐom đóm: %s %d/10     Đèn: %d/%d\nLửa: %s     Điểm: %d     Còn: %s\nLướt: %.1fs · Xung sáng: %.1fs · Gió: %s\nWASD · Space nhảy · Shift lướt · E nạp đèn · Q xung sáng · P/Esc tạm dừng\n%s" % [night, NIGHT_NAMES[night - 1], mote_bar, carried, lit_count, total_lamps, "✦ ".repeat(maxi(flames, 0)), score + total_score, shown_time, dash_cooldown, pulse_cooldown, "đang thổi" if wind_active else "lặng", nearest_hint]
 
 
 func _format_time(seconds: float) -> String:

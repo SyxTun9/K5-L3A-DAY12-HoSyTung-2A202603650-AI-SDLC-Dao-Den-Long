@@ -1,8 +1,8 @@
-# Đảo Đèn Lồng — Phase 1
+# Đảo Đèn Lồng — Phase 2
 
-Game 3D góc nhìn từ trên xuống, làm bằng Godot 4.7. Mây thu thập đom đóm, thắp năm đèn lồng, né Bóng Mực và có thể dùng ánh sáng để làm chúng choáng.
+Game 3D góc nhìn từ trên xuống, làm bằng Godot 4.7. Mây thu thập đom đóm, thắp đèn trên ba hòn đảo, né Bóng Mực và Gió Lạc, dùng xung sáng để đẩy lùi chúng.
 
-> Phase 1 đang ở trạng thái triển khai và kiểm thử. Cần hoàn tất một lượt chơi tương tác từ đầu đến thắng/thua và ghi bằng chứng trước khi gắn tag nộp.
+Phase 2 chuẩn hóa gameplay bằng Contract 1.1, bổ sung ba đêm, dash, bệ phóng, bùa gió, Gió Lạc và mô phỏng headless cố định 60 tick/giây.
 
 ## Chạy game
 
@@ -22,20 +22,20 @@ Trên Windows nếu Godot chưa nằm trong PATH:
 
 - **W/A/S/D:** di chuyển tương đối theo camera
 - **Space:** nhảy
-- **E:** nạp đom đóm vào đèn ở gần
-- **Q:** tỏa sáng, tốn 1 đom đóm đang mang
+- **Shift:** dash (14 m/s trong 0,2 giây; hồi chiêu 1,5 giây, bỏ hồi chiêu khi có Bùa Gió)
+- **E:** nạp tối đa 10 đom đóm vào đèn ở gần
+- **Q:** xung sáng, tốn 3 đom đóm, làm choáng mục tiêu trong 5 m
+- **P / Esc:** tạm dừng; nhấn lại để tiếp tục, R để chơi lại đêm
 - **Giữ chuột phải và rê:** xoay góc camera
-- **R:** chơi lại sau thắng/thua
 
 ## Mục tiêu và tính điểm
 
-Thắp đủ 5 đèn, mỗi đèn cần 5 đom đóm. Mây mang tối đa 10 đom đóm. Hết 3 lửa hoặc hết 300 giây thì thua.
+Thắp lần lượt 5, 6 và 7 đèn trong ba đêm; mỗi đèn cần 10 đom đóm. Mây mang tối đa 10 đom đóm. Mỗi đêm có 3 lửa và thời hạn 300, 330 hoặc 360 giây.
 
-- Nhặt đom đóm: 10 điểm
+- Nạp đom đóm vào đèn: 10 điểm mỗi hạt
 - Thắp một đèn: 100 điểm
-- Làm choáng Bóng Mực: 5 điểm
-- Mỗi giây còn lại khi thắng: 1 điểm
-- Mỗi lửa còn lại khi kết thúc: 25 điểm
+- Mỗi Bóng Mực bị trúng xung sáng: 5 điểm
+- Thắng đêm: 2 điểm mỗi giây còn lại và 50 điểm mỗi lửa còn
 
 Các thông số chuẩn nằm trong [`game.contract.json`](game.contract.json). Giả định Phase 1 ở [`docs/notes/phase-1.md`](docs/notes/phase-1.md).
 
@@ -60,4 +60,4 @@ Trên Windows có thể đặt `GODOT_BIN` trỏ tới executable Godot trước
 - Quy tắc làm việc cho coding agent: [`AGENTS.md`](AGENTS.md)
 - Nguồn asset và giấy phép: [`CREDITS.md`](CREDITS.md), [`LICENSE`](LICENSE)
 
-Video demo sẽ được bổ sung ở Release `v1.0.0` sau Phase 4.
+Thông số chuẩn và lệnh chạy nằm trong [`game.contract.json`](game.contract.json). Theo dõi acceptance checklist và kết quả chạy tại [`docs/notes/phase-2-spec.md`](docs/notes/phase-2-spec.md) cùng [`docs/proof/`](docs/proof/).

@@ -1,0 +1,7 @@
+{
+  "player": { "pos": [0, 3, 13], "carried": 0, "flames": 3 },
+  "motes": [],
+  "shades": [],
+  "wind_enabled": false,
+  "time_left_s": 60
+}
