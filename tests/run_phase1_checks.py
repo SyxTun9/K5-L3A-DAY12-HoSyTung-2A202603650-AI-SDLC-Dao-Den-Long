@@ -62,6 +62,20 @@ def main():
         )
         assert {"deposit", "lantern_lit"}.issubset(set(event_names(deposit)))
 
+        refuel = run_case("refuel", "tests/scenarios/refuel.json", "tests/inputs/interact-once.json", output_dir=temp_dir)
+        assert "refuel" in event_names(refuel)
+        assert refuel[0]["lanterns"][0]["fuel"] == 50.0
+
+        relight = run_case("relight", "tests/scenarios/relight.json", "tests/inputs/interact-once.json", ticks=10, output_dir=temp_dir)
+        relit = next(record for record in relight if record.get("name") == "lantern_lit")
+        assert relit["data"]["relight"] is True and relight[-2]["player"]["capacity"] == 12
+
+        drain = run_case("fuel-drain", "tests/scenarios/fuel-drain.json", ticks=60, output_dir=temp_dir)
+        assert "fuel_drain" in event_names(drain) and drain[-2]["lanterns"][0]["fuel"] < 15.0
+
+        fuel_out = run_case("fuel-out", "tests/scenarios/fuel-out.json", ticks=10, output_dir=temp_dir)
+        assert "lantern_out" in event_names(fuel_out) and fuel_out[-2]["lanterns"][0]["lit"] is False
+
         pulse = run_case(
             "pulse", "tests/scenarios/pulse.json", "tests/inputs/pulse.json", output_dir=temp_dir
         )
@@ -97,8 +111,13 @@ def main():
         assert hit_event["data"]["flames"] == 2 and hit_event["data"]["dropped"] == 2
         assert "mote_picked" not in event_names(hit)
 
-        win = run_case("win", "tests/scenarios/win.json", output_dir=temp_dir)
-        assert win[-1]["state"] == "won" and "game_over" in event_names(win)
+        win = run_case("win", "tests/scenarios/win.json", ticks=60, output_dir=temp_dir)
+        win_event = next(record for record in win if record.get("name") == "game_over")
+        assert win[-1]["state"] == "won" and win_event["data"]["reason"] == "dawn_survived"
+
+        dawn_loss = run_case("dawn-loss", "tests/scenarios/dawn-loss.json", ticks=60, output_dir=temp_dir)
+        dawn_loss_event = next(record for record in dawn_loss if record.get("name") == "game_over")
+        assert dawn_loss[-1]["state"] == "lost" and dawn_loss_event["data"]["reason"] == "dawn"
 
         lose = run_case("lose", "tests/scenarios/lose.json", output_dir=temp_dir)
         assert lose[-1]["state"] == "lost" and "game_over" in event_names(lose)
@@ -122,7 +141,7 @@ def main():
         )
         assert invalid.returncode == 2, f"invalid input returned {invalid.returncode}, expected 2"
 
-    print("Phase 2 contract checks passed: pickup, deposit, pulse, dash, pause, drifter, charm, wind, hit, win, lose, determinism, invalid input.")
+    print("Phase 1–3 checks passed: pickup, deposit, refuel, relight, shade drain, pulse, dash, pause, drifter, charm, wind, hit, dawn win/loss, determinism, invalid input.")
 
 
 if __name__ == "__main__":

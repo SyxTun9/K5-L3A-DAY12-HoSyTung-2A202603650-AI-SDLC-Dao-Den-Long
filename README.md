@@ -30,12 +30,12 @@ Trên Windows nếu Godot chưa nằm trong PATH:
 
 ## Mục tiêu và tính điểm
 
-Thắp lần lượt 5, 6 và 7 đèn trong ba đêm; mỗi đèn cần 10 đom đóm. Mây mang tối đa 10 đom đóm. Mỗi đêm có 3 lửa và thời hạn 300, 330 hoặc 360 giây.
+Giữ ít nhất 60% số đèn sáng đến bình minh trong ba đêm. Đèn có 100 giây dầu, có thể nạp bằng đom đóm; đèn tắt cần 5 hạt để thắp lại. Mây bắt đầu mang 10 hạt, sức chứa tăng 2 sau mỗi lần thắp thành công (tối đa 20). Mỗi đêm có 3 lửa và thời hạn 240, 270 hoặc 300 giây.
 
-- Nạp đom đóm vào đèn: 10 điểm mỗi hạt
+- Nạp đom đóm vào đèn: 5 điểm mỗi hạt
 - Thắp một đèn: 100 điểm
 - Mỗi Bóng Mực bị trúng xung sáng: 5 điểm
-- Thắng đêm: 2 điểm mỗi giây còn lại và 50 điểm mỗi lửa còn
+- Thắng bình minh: 50 điểm cộng lượng dầu còn lại cho mỗi đèn sáng, cùng 50 điểm mỗi lửa còn
 
 Các thông số chuẩn nằm trong [`game.contract.json`](game.contract.json). Giả định Phase 1 ở [`docs/notes/phase-1.md`](docs/notes/phase-1.md).
 
@@ -60,4 +60,4 @@ Trên Windows có thể đặt `GODOT_BIN` trỏ tới executable Godot trước
 - Quy tắc làm việc cho coding agent: [`AGENTS.md`](AGENTS.md)
 - Nguồn asset và giấy phép: [`CREDITS.md`](CREDITS.md), [`LICENSE`](LICENSE)
 
-Thông số chuẩn và lệnh chạy nằm trong [`game.contract.json`](game.contract.json). Theo dõi acceptance checklist và kết quả chạy tại [`docs/notes/phase-2-spec.md`](docs/notes/phase-2-spec.md) cùng [`docs/proof/`](docs/proof/).
+Thông số chuẩn và lệnh chạy nằm trong [`game.contract.json`](game.contract.json). Theo dõi thay đổi Phase 3 tại [`docs/notes/phase-3-spec.md`](docs/notes/phase-3-spec.md), ADR và [`CHANGELOG.md`](CHANGELOG.md) cùng [`docs/proof/`](docs/proof/).

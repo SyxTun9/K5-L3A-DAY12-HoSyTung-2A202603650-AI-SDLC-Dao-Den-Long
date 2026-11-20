@@ -14,11 +14,14 @@ var lanterns: Array[Dictionary] = []
 var motes: Array[Dictionary] = []
 var flames := 3
 var carried := 0
+var successful_lights := 0
 var score := 0
 var time_left := 300.0
 var invulnerable := 0.0
 var pulse_cooldown := 0.0
 var shade_stunned := 0.0
+var shade_drain_lamp := -1
+var shade_push_lamp := -1
 var game_state := "playing"
 var camera_yaw := 0.0
 var camera_pitch := 1.27
@@ -40,6 +43,7 @@ var pause_panel: PanelContainer
 var settings_box: VBoxContainer
 var mouse_sensitivity := 0.004
 var master_volume_db := 0.0
+var colorblind_mode := false
 var bgm_player: AudioStreamPlayer
 var countdown_mark := -1
 
@@ -187,6 +191,14 @@ func _build_world() -> void:
 	shade_visual.mesh = shade_mesh
 	shade_visual.material_override = _material(Color("241a3a"), 0.2)
 	shade.add_child(shade_visual)
+	var shade_outline := MeshInstance3D.new()
+	var outline_mesh := TorusMesh.new()
+	outline_mesh.inner_radius = 0.48
+	outline_mesh.outer_radius = 0.62
+	shade_outline.mesh = outline_mesh
+	shade_outline.position.y = 0.08
+	shade_outline.material_override = _material(Color("7a3cff"), 1.0)
+	shade.add_child(shade_outline)
 	var shade_light := OmniLight3D.new()
 	shade_light.light_color = Color("8a42c9")
 	shade_light.light_energy = 0.7
@@ -257,6 +269,11 @@ func _build_hud() -> void:
 	sensitivity_slider.value = mouse_sensitivity
 	sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
 	settings_box.add_child(sensitivity_slider)
+	var colorblind_toggle := CheckButton.new()
+	colorblind_toggle.text = "Chế độ phân biệt màu"
+	colorblind_toggle.button_pressed = colorblind_mode
+	colorblind_toggle.toggled.connect(_on_colorblind_toggled)
+	settings_box.add_child(colorblind_toggle)
 	var menu_button := Button.new()
 	menu_button.text = "Về màn hình chính"
 	menu_button.pressed.connect(_return_to_menu)
@@ -269,6 +286,7 @@ func _load_settings() -> void:
 	if config.load("user://settings.cfg") == OK:
 		master_volume_db = float(config.get_value("audio", "master_db", 0.0))
 		mouse_sensitivity = float(config.get_value("input", "mouse_sensitivity", 0.004))
+		colorblind_mode = bool(config.get_value("accessibility", "colorblind_mode", false))
 	AudioServer.set_bus_volume_db(0, master_volume_db)
 
 
@@ -276,6 +294,7 @@ func _save_settings() -> void:
 	var config := ConfigFile.new()
 	config.set_value("audio", "master_db", master_volume_db)
 	config.set_value("input", "mouse_sensitivity", mouse_sensitivity)
+	config.set_value("accessibility", "colorblind_mode", colorblind_mode)
 	config.save("user://settings.cfg")
 
 
@@ -287,6 +306,11 @@ func _on_volume_changed(value: float) -> void:
 
 func _on_sensitivity_changed(value: float) -> void:
 	mouse_sensitivity = value
+	_save_settings()
+
+
+func _on_colorblind_toggled(enabled: bool) -> void:
+	colorblind_mode = enabled
 	_save_settings()
 
 
@@ -374,7 +398,7 @@ func _start_round() -> void:
 	for i in range(lamp_positions.size()):
 		lanterns.append({
 			"id": "L%d" % (i + 1), "pos": lamp_positions[i],
-			"deposited": 0, "lit": false, "node": _make_lantern(i)
+			"deposited": 0, "lit": false, "fuel": 0.0, "ever_lit": false, "relit_count": 0, "node": _make_lantern(i)
 		})
 
 	motes.clear()
@@ -391,8 +415,9 @@ func _start_round() -> void:
 	shade.position = _night_shade_start()
 	flames = 3
 	carried = 0
+	successful_lights = 0
 	score = 0
-	time_left = [300.0, 330.0, 360.0][night - 1]
+	time_left = [240.0, 270.0, 300.0][night - 1]
 	invulnerable = 0.0
 	pulse_cooldown = 0.0
 	dash_cooldown = 0.0
@@ -589,8 +614,16 @@ func _make_lantern(index: int) -> Node3D:
 	light.light_energy = 0.0
 	light.omni_range = 12.0
 	root.add_child(light)
+	var fuel_bar := MeshInstance3D.new()
+	var bar_mesh := BoxMesh.new()
+	bar_mesh.size = Vector3(1.0, 0.09, 0.12)
+	fuel_bar.mesh = bar_mesh
+	fuel_bar.position = Vector3(0, 3.45, 0)
+	fuel_bar.material_override = _material(Color("8be08b"), 0.8)
+	root.add_child(fuel_bar)
 	root.set_meta("flame", flame)
 	root.set_meta("light", light)
+	root.set_meta("fuel_bar", fuel_bar)
 	return root
 
 
@@ -707,6 +740,7 @@ func _physics_process(delta: float) -> void:
 	_update_charms(delta)
 	_update_drifters(delta)
 	_update_gust(delta)
+	_update_lantern_fuel(delta)
 	_interact_lantern()
 	_try_pulse()
 	_update_shade(delta)
@@ -873,7 +907,7 @@ func _interact_lantern() -> void:
 	var nearest_index := -1
 	var nearest_distance := INF
 	for i in range(lanterns.size()):
-		if lanterns[i]["lit"]:
+		if lanterns[i]["lit"] and float(lanterns[i]["fuel"]) >= 100.0:
 			continue
 		var d: float = _flat_distance(player.position, lanterns[i]["pos"])
 		if d < nearest_distance:
@@ -882,20 +916,68 @@ func _interact_lantern() -> void:
 	if nearest_index < 0 or nearest_distance > 2.0 or carried <= 0:
 		return
 	var lantern: Dictionary = lanterns[nearest_index]
-	var amount := mini(10 - int(lantern["deposited"]), carried)
+	if lantern["lit"]:
+		var refuel_amount := mini(carried, ceili((100.0 - float(lantern["fuel"])) / 10.0))
+		if refuel_amount <= 0: return
+		carried -= refuel_amount
+		lantern["fuel"] = minf(100.0, float(lantern["fuel"]) + refuel_amount * 10.0)
+		if float(lantern["fuel"]) >= 30.0 and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
+			shade_push_lamp = nearest_index
+			shade_drain_lamp = -1
+		score += refuel_amount * 5
+		_play_sfx("deposit")
+		_update_lantern_visual(lantern)
+		return
+	var relight := bool(lantern["ever_lit"])
+	var cost := 5 if relight else 10
+	var amount := mini(cost - int(lantern["deposited"]), carried)
 	carried -= amount
 	lantern["deposited"] += amount
-	score += amount * 10
+	score += amount * 5
 	_play_sfx("deposit")
-	if int(lantern["deposited"]) >= 10:
+	if int(lantern["deposited"]) >= cost:
 		lantern["lit"] = true
-		score += 100
-		var root: Node3D = lantern["node"]
-		var flame: MeshInstance3D = root.get_meta("flame")
-		var light: OmniLight3D = root.get_meta("light")
-		flame.material_override = _material(Color("ffca5e"), 2.2)
-		light.light_energy = 2.4
+		lantern["ever_lit"] = true
+		lantern["fuel"] = 100.0
+		lantern["deposited"] = 0
+		if _flat_distance(shade.position, lantern["pos"]) <= 6.0:
+			shade_push_lamp = nearest_index
+			shade_drain_lamp = -1
+		lantern["relit_count"] = int(lantern["relit_count"]) + (1 if relight else 0)
+		successful_lights += 1
+		score += 40 if relight else 100
+		_update_lantern_visual(lantern)
 		_play_sfx("lamp")
+
+
+func _update_lantern_fuel(delta: float) -> void:
+	for lantern in lanterns:
+		if lantern["lit"]:
+			lantern["fuel"] = maxf(0.0, float(lantern["fuel"]) - delta)
+			if lantern["fuel"] <= 0.0:
+				lantern["lit"] = false
+				lantern["deposited"] = 0
+				if shade_drain_lamp >= 0 and shade_drain_lamp == lanterns.find(lantern): shade_drain_lamp = -1
+		_update_lantern_visual(lantern)
+
+
+func _update_lantern_visual(lantern: Dictionary) -> void:
+	var root: Node3D = lantern["node"]
+	var flame: MeshInstance3D = root.get_meta("flame")
+	var light: OmniLight3D = root.get_meta("light")
+	var bar: MeshInstance3D = root.get_meta("fuel_bar")
+	var lit := bool(lantern["lit"])
+	var weak := lit and float(lantern["fuel"]) < 30.0
+	var visible_lit := lit and (not weak or int(sim_ticks / 30) % 2 == 0)
+	flame.scale = Vector3.ONE if visible_lit else Vector3(1.0, 0.8, 1.0)
+	light.light_energy = 2.4 * float(lantern["fuel"]) / 100.0 if lit else 0.0
+	bar.visible = lit
+	bar.scale.x = maxf(0.02, float(lantern["fuel"]) / 100.0)
+	var visual_key := "%s:%s:%s" % [lit, visible_lit, weak]
+	if str(root.get_meta("visual_key", "")) != visual_key:
+		flame.material_override = _material(Color("ffca5e") if visible_lit else Color("6d6271"), 2.2 if visible_lit else 0.0)
+		bar.material_override = _material(Color("ff5a5f") if weak else Color("8be08b"), 0.8)
+		root.set_meta("visual_key", visual_key)
 
 
 func _try_pulse() -> void:
@@ -905,12 +987,15 @@ func _try_pulse() -> void:
 	pulse_cooldown = 3.0
 	_play_sfx("pulse")
 	if player.position.distance_to(shade.position) <= 5.0:
+		var was_draining := shade_drain_lamp >= 0
 		shade_stunned = 2.0
+		shade_drain_lamp = -1
+		shade_push_lamp = -1
 		var away := shade.position - player.position
 		away.y = 0
 		if away.length_squared() > 0:
 			shade.position += away.normalized() * 4.0
-		score += 5
+		score += 15 if was_draining else 5
 		shade.get_child(0).material_override = _material(Color("8062a0"), 1.1)
 	else:
 		shade.get_child(0).material_override = _material(Color("241a3a"), 0.2)
@@ -930,10 +1015,43 @@ func _try_pulse() -> void:
 
 
 func _update_shade(delta: float) -> void:
+	var outline: MeshInstance3D = shade.get_child(1)
+	if bool(outline.get_meta("colorblind", false)) != colorblind_mode:
+		outline.material_override = _material(Color("00b3ff") if colorblind_mode else Color("7a3cff"), 1.0)
+		outline.set_meta("colorblind", colorblind_mode)
 	if shade_stunned > 0:
+		shade_drain_lamp = -1
 		return
+	if shade_push_lamp >= 0 and shade_push_lamp < lanterns.size():
+		var pushed_lamp: Dictionary = lanterns[shade_push_lamp]
+		var outward: Vector3 = shade.position - pushed_lamp["pos"]
+		outward.y = 0
+		if outward.length() < 6.0 and pushed_lamp["lit"] and float(pushed_lamp["fuel"]) >= 30.0:
+			if outward.length_squared() < 0.001: outward = Vector3.RIGHT
+			shade.position += outward.normalized() * 12.0 * delta
+			return
+		shade_push_lamp = -1
+	var weak_index := -1
+	var weak_distance := INF
+	for i in range(lanterns.size()):
+		var lantern: Dictionary = lanterns[i]
+		if lantern["lit"] and float(lantern["fuel"]) < 30.0 and _flat_distance(shade.position, lantern["pos"]) < weak_distance:
+			weak_index = i
+			weak_distance = _flat_distance(shade.position, lantern["pos"])
+	if weak_index >= 0:
+		var weak_lamp: Dictionary = lanterns[weak_index]
+		var to_lamp: Vector3 = weak_lamp["pos"] - shade.position
+		to_lamp.y = 0
+		if to_lamp.length() > 2.0:
+			shade_drain_lamp = -1
+			shade.position += to_lamp.normalized() * 4.0 * delta
+		else:
+			shade_drain_lamp = weak_index
+			weak_lamp["fuel"] = maxf(0.0, float(weak_lamp["fuel"]) - 5.0 * delta)
+		return
+	shade_drain_lamp = -1
 	for lantern in lanterns:
-		if lantern["lit"] and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
+		if lantern["lit"] and float(lantern["fuel"]) >= 30.0 and _flat_distance(shade.position, lantern["pos"]) <= 6.0:
 			return
 	var direction: Vector3 = player.position - shade.position
 	direction.y = 0
@@ -966,20 +1084,21 @@ func _check_end() -> void:
 		_play_sfx("loss")
 		result_label.text = "ĐÊM TỐI QUÁ!\nĐiểm: %d\nNhấn R để thử lại" % score
 		return
-	var all_lit := true
+	if time_left > 0.0: return
+	var lit_count := 0
 	for lantern in lanterns:
-		if not lantern["lit"]:
-			all_lit = false
-			break
-	if all_lit:
+		if lantern["lit"]: lit_count += 1
+	if lit_count >= ceili(lanterns.size() * 0.6):
 		game_state = "won"
 		_play_sfx("win")
-		score += floori(time_left) * 2 + flames * 50
+		for lantern in lanterns:
+			if lantern["lit"]: score += 50 + floori(float(lantern["fuel"]))
+		score += flames * 50
 		if night < 3:
 			result_label.text = "%s ĐÃ SÁNG!\nĐiểm đêm: %d\nNhấn R sang đêm tiếp theo" % [NIGHT_NAMES[night - 1], score]
 		else:
 			result_label.text = "BÌNH MINH TRÊN BA ĐẢO!\nTổng điểm: %d\nNhấn R để chơi lại" % (total_score + score)
-	elif time_left <= 0:
+	else:
 		game_state = "lost"
 		_play_sfx("loss")
 		result_label.text = "BÌNH MINH ĐÃ LÊN\nĐiểm: %d\nNhấn R để chơi lại" % score
@@ -993,13 +1112,13 @@ func _update_hud() -> void:
 	var total_lamps := lanterns.size()
 	var shown_time := _format_time(time_left)
 	if time_left <= 30.0:
-		hud.add_theme_color_override("font_color", Color("ff5a5f"))
+		hud.add_theme_color_override("font_color", Color.WHITE if colorblind_mode else Color("ff5a5f"))
 	else:
 		hud.add_theme_color_override("font_color", Color("f5f1e6"))
 	var nearest_hint := ""
 	var nearest_distance := INF
 	for lamp in lanterns:
-		if lamp["lit"]: continue
+		if lamp["lit"] and float(lamp["fuel"]) >= 100.0: continue
 		var d := _flat_distance(player.position, lamp["pos"])
 		if d < nearest_distance:
 			nearest_distance = d
@@ -1007,10 +1126,11 @@ func _update_hud() -> void:
 			delta = delta.rotated(Vector3.UP, -camera_yaw)
 			var arrow_index := posmod(roundi(wrapf(rad_to_deg(atan2(delta.x, delta.z)), 0.0, 360.0) / 45.0), 8)
 			var arrows := ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
-			nearest_hint = "%s Đèn gần nhất · E nạp (%d/10) · %.0fm" % [arrows[arrow_index], lamp["deposited"], d]
-	var mote_bar := "●".repeat(carried) + "○".repeat(10 - carried)
+			nearest_hint = "%s Đèn gần nhất · E nạp (%d/10) · %.0fm" % [arrows[arrow_index], floori(float(lamp["fuel"])) if lamp["lit"] else int(lamp["deposited"]), d]
+	var capacity := mini(20, 10 + 2 * successful_lights)
+	var mote_bar := "●".repeat(carried) + "○".repeat(maxi(0, capacity - carried))
 	world_environment.environment.ambient_light_energy = 0.15 + 0.55 * float(lit_count) / float(maxi(total_lamps, 1))
-	hud.text = "ĐÊM %d — %s\nĐom đóm: %s %d/10     Đèn: %d/%d\nLửa: %s     Điểm: %d     Còn: %s\nLướt: %.1fs · Xung sáng: %.1fs · Gió: %s\nWASD · Space nhảy · Shift lướt · E nạp đèn · Q xung sáng · P/Esc tạm dừng\n%s" % [night, NIGHT_NAMES[night - 1], mote_bar, carried, lit_count, total_lamps, "✦ ".repeat(maxi(flames, 0)), score + total_score, shown_time, dash_cooldown, pulse_cooldown, "đang thổi" if wind_active else "lặng", nearest_hint]
+	hud.text = "ĐÊM %d — %s\nĐom đóm: %s %d/%d     Đèn: %d/%d\nLửa: %s     Điểm: %d     Còn: %s%s\nLướt: %.1fs · Xung sáng: %.1fs · Gió: %s\nWASD · Space nhảy · Shift lướt · E nạp đèn · Q xung sáng · P/Esc tạm dừng\n%s" % [night, NIGHT_NAMES[night - 1], mote_bar, carried, capacity, lit_count, total_lamps, "✦ ".repeat(maxi(flames, 0)), score + total_score, " ⚠" if time_left <= 30.0 else "", shown_time, dash_cooldown, pulse_cooldown, "đang thổi" if wind_active else "lặng", nearest_hint]
 
 
 func _format_time(seconds: float) -> String:

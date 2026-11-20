@@ -1,7 +1,7 @@
 extends SceneTree
 
 const HZ := 60
-const SHADE_STATES := ["spawning", "wander", "chase", "recoil", "stunned"]
+const SHADE_STATES := ["spawning", "wander", "chase", "recoil", "stunned", "drain"]
 
 var rng := RandomNumberGenerator.new()
 var tuning: Dictionary = {}
@@ -47,8 +47,8 @@ func _initialize() -> void:
 	if not last_json_error.is_empty() or contract.is_empty():
 		_fail("Cannot read game.contract.json: " + last_json_error, 1)
 		return
-	if str(contract.get("contract_version", "")) != "1.1":
-		_fail("Expected game.contract.json contract_version 1.1.", 1)
+	if str(contract.get("contract_version", "")) != "1.2":
+		_fail("Expected game.contract.json contract_version 1.2.", 1)
 		return
 	tuning = contract.get("tuning", {})
 	if tuning.is_empty():
@@ -137,12 +137,12 @@ func _setup_game(options: Dictionary) -> bool:
 	var duration_key := "night%d_duration_s" % night
 	time_left_s = float(tuning[duration_key])
 	var player_start := Vector3(0, 6, 0) if night == 3 else Vector3.ZERO
-	player = {"pos": player_start, "vel": Vector3.ZERO, "grounded": true, "flames": int(tuning["flames"]), "carried": 0, "invuln_ticks": 0, "dash_cd_ticks": 0, "dash_ticks": 0, "dash_dir": Vector3(0, 0, 1), "pulse_cd_ticks": 0, "charm_ticks": 0, "respawn_ticks": 0, "respawn_pending": false, "pad_airborne": false, "facing": Vector3(0, 0, 1)}
+	player = {"pos": player_start, "vel": Vector3.ZERO, "grounded": true, "flames": int(tuning["flames"]), "carried": 0, "successful_lights": 0, "invuln_ticks": 0, "dash_cd_ticks": 0, "dash_ticks": 0, "dash_dir": Vector3(0, 0, 1), "pulse_cd_ticks": 0, "charm_ticks": 0, "respawn_ticks": 0, "respawn_pending": false, "pad_airborne": false, "facing": Vector3(0, 0, 1)}
 	lanterns.clear()
 	var lantern_count := int(tuning["lantern_count_night%d" % night])
 	var lamp_positions := _lantern_positions()
 	for i in range(lantern_count):
-		lanterns.append({"id": "L%d" % (i + 1), "pos": lamp_positions[i], "deposited": 0, "lit": false})
+		lanterns.append({"id": "L%d" % (i + 1), "pos": lamp_positions[i], "deposited": 0, "lit": false, "fuel_u": 0, "ever_lit": false, "relit_count": 0})
 	_mote_spawn_points()
 	_shade_spawn_points()
 	_setup_charms()
@@ -315,7 +315,7 @@ func _apply_scenario(scenario: Dictionary) -> void:
 				return
 			shade_serial += 1
 			var left := int(item.get("state_ticks_left", 0))
-			shades.append({"id": str(item.get("id", "S%d" % shade_serial)), "pos": _read_vec(item.get("pos", [10, 0, 0])), "state": shade_state, "state_ticks_left": left, "stun_ticks": left if shade_state == "stunned" else 0, "recoil_dir": Vector3.ZERO, "recoil_ticks": left if shade_state == "recoil" else 0, "safe_target": Vector3.ZERO, "safe_ticks": 0, "spawn_ticks": left if shade_state == "spawning" else 0})
+			shades.append({"id": str(item.get("id", "S%d" % shade_serial)), "pos": _read_vec(item.get("pos", [10, 0, 0])), "state": shade_state, "state_ticks_left": left, "stun_ticks": left if shade_state == "stunned" else 0, "recoil_dir": Vector3.ZERO, "recoil_ticks": left if shade_state == "recoil" else 0, "safe_target": Vector3.ZERO, "safe_ticks": 0, "spawn_ticks": left if shade_state == "spawning" else 0, "target_lantern_id": str(item.get("target_lantern_id", "")), "drain_event_ticks": 0})
 	if scenario.has("lanterns"):
 		if not scenario["lanterns"] is Array:
 			last_json_error = "lanterns must be an array"
@@ -330,6 +330,18 @@ func _apply_scenario(scenario: Dictionary) -> void:
 						lantern["pos"] = _read_vec(update["pos"])
 					lantern["deposited"] = int(update.get("deposited", lantern["deposited"]))
 					lantern["lit"] = bool(update.get("lit", lantern["lit"]))
+					lantern["ever_lit"] = bool(update.get("ever_lit", lantern["ever_lit"] or lantern["lit"]))
+					var initial_fuel := int(round(float(update.get("fuel", float(tuning["fuel_max"]) if lantern["lit"] else 0.0)) * HZ))
+					lantern["fuel_u"] = initial_fuel if lantern["lit"] else 0
+					lantern["relit_count"] = int(update.get("relit_count", lantern["relit_count"]))
+	if scenario.has("player") and scenario["player"] is Dictionary:
+		var player_update: Dictionary = scenario["player"]
+		player["successful_lights"] = int(player_update.get("successful_lights", 0))
+		player["carried"] = int(player_update.get("carried", player["carried"]))
+		player["flames"] = int(player_update.get("flames", player["flames"]))
+		if player_update.has("pos"): player["pos"] = _read_vec(player_update["pos"])
+	if scenario.has("time_left_s"):
+		time_left_s = clampf(float(scenario["time_left_s"]), 0.0, float(tuning["night%d_duration_s" % night]))
 	if scenario.has("drifters"):
 		if not scenario["drifters"] is Array:
 			last_json_error = "drifters must be an array"
@@ -393,6 +405,7 @@ func _simulate_tick() -> void:
 	time_left_s = maxf(0.0, time_left_s - 1.0 / HZ)
 	var was_respawning := int(player["respawn_ticks"]) > 0
 	_decrement_counters()
+	_apply_lamp_fuel_tick()
 	_update_wind()
 	if was_respawning and int(player["respawn_ticks"]) == 0 and bool(player["respawn_pending"]):
 		player["pos"] = Vector3.ZERO
@@ -448,6 +461,29 @@ func _decrement_counters() -> void:
 			drifter["state_ticks_left"] = maxi(0, int(drifter["state_ticks_left"]) - 1)
 	motes = motes.filter(func(m: Dictionary) -> bool: return str(m["kind"]) != "dropped" or int(m["ttl_ticks"]) > 0)
 	drifters = drifters.filter(func(d: Dictionary) -> bool: return str(d["state"]) != "removed" or int(d["state_ticks_left"]) > 0)
+
+
+func _apply_lamp_fuel_tick() -> void:
+	var drain_by_lamp: Dictionary = {}
+	for shade in shades:
+		if str(shade.get("state", "")) != "drain":
+			continue
+		var lamp_id := str(shade.get("target_lantern_id", ""))
+		if not drain_by_lamp.has(lamp_id): drain_by_lamp[lamp_id] = []
+		drain_by_lamp[lamp_id].append(shade)
+	for lamp in lanterns:
+		if not bool(lamp["lit"]): continue
+		lamp["fuel_u"] = int(lamp["fuel_u"]) - 1
+		for shade in drain_by_lamp.get(str(lamp["id"]), []):
+			lamp["fuel_u"] = int(lamp["fuel_u"]) - 5
+			shade["drain_event_ticks"] = int(shade.get("drain_event_ticks", 0)) + 1
+			if int(shade["drain_event_ticks"]) % HZ == 0:
+				_emit("fuel_drain", {"lantern_id": lamp["id"], "shade_id": shade["id"], "fuel": _fuel(lamp)}, tick)
+		if int(lamp["fuel_u"]) <= 0:
+			lamp["fuel_u"] = 0
+			lamp["lit"] = false
+			lamp["deposited"] = 0
+			_emit("lantern_out", {"lantern_id": lamp["id"]}, tick)
 
 
 func _update_wind() -> void:
@@ -611,7 +647,7 @@ func _pickup_motes() -> void:
 	var i := motes.size() - 1
 	while i >= 0:
 		var mote: Dictionary = motes[i]
-		if int(player["carried"]) < int(tuning["carry_capacity"]) and _can_pickup(mote["pos"]):
+		if int(player["carried"]) < _player_capacity() and _can_pickup(mote["pos"]):
 			player["carried"] = int(player["carried"]) + 1
 			_emit("mote_picked", {"mote_id": mote["id"], "carried": player["carried"]}, tick)
 			motes.remove_at(i)
@@ -634,13 +670,13 @@ func _can_pickup(item_pos: Vector3) -> bool:
 
 
 func _interact_lantern() -> void:
-	if not _pressed("interact") or int(player["carried"]) <= 0:
+	if not _pressed("interact"):
 		return
 	var nearest_index := -1
 	var nearest_distance := INF
 	for i in range(lanterns.size()):
 		var lamp: Dictionary = lanterns[i]
-		if bool(lamp["lit"]):
+		if bool(lamp["lit"]) and int(lamp["fuel_u"]) >= int(tuning["fuel_max"]) * HZ:
 			continue
 		var d := _distance_xz(player["pos"], lamp["pos"])
 		if d < nearest_distance or (is_equal_approx(d, nearest_distance) and (nearest_index < 0 or str(lamp["id"]) < str(lanterns[nearest_index]["id"]))):
@@ -649,17 +685,40 @@ func _interact_lantern() -> void:
 	if nearest_index < 0 or nearest_distance > float(tuning["interact_radius"]):
 		return
 	var lamp: Dictionary = lanterns[nearest_index]
-	var amount := mini(int(player["carried"]), int(tuning["lantern_cost"]) - int(lamp["deposited"]))
-	if amount <= 0:
+	if bool(lamp["lit"]):
+		var missing := int(tuning["fuel_max"]) * HZ - int(lamp["fuel_u"])
+		var used := mini(int(player["carried"]), ceili(float(missing) / (int(tuning["fuel_per_mote"]) * HZ)))
+		if used <= 0: return
+		lamp["fuel_u"] = mini(int(tuning["fuel_max"]) * HZ, int(lamp["fuel_u"]) + used * int(tuning["fuel_per_mote"]) * HZ)
+		player["carried"] = int(player["carried"]) - used
+		score += used * int(tuning["score"]["per_mote"])
+		_emit("refuel", {"lantern_id": lamp["id"], "amount": used, "fuel": _fuel(lamp)}, tick)
 		return
+	var cost := int(tuning["relight_cost"]) if bool(lamp["ever_lit"]) else int(tuning["lantern_cost"])
+	var amount := mini(int(player["carried"]), cost - int(lamp["deposited"]))
+	if amount <= 0: return
 	player["carried"] = int(player["carried"]) - amount
 	lamp["deposited"] = int(lamp["deposited"]) + amount
 	score += amount * int(tuning["score"]["per_mote"])
 	_emit("deposit", {"lantern_id": lamp["id"], "amount": amount, "deposited": lamp["deposited"]}, tick)
-	if int(lamp["deposited"]) >= int(tuning["lantern_cost"]):
+	if int(lamp["deposited"]) >= cost:
+		var relight := bool(lamp["ever_lit"])
 		lamp["lit"] = true
-		score += int(tuning["score"]["per_lantern"])
-		_emit("lantern_lit", {"lantern_id": lamp["id"]}, tick)
+		lamp["ever_lit"] = true
+		lamp["fuel_u"] = int(tuning["fuel_max"]) * HZ
+		lamp["deposited"] = 0
+		if relight: lamp["relit_count"] = int(lamp["relit_count"]) + 1
+		player["successful_lights"] = int(player["successful_lights"]) + 1
+		score += int(tuning["score"]["per_lantern"]) if not relight else int(tuning["score"]["per_relight"])
+		_emit("lantern_lit", {"lantern_id": lamp["id"], "relight": relight}, tick)
+
+
+func _fuel(lamp: Dictionary) -> float:
+	return snappedf(float(lamp.get("fuel_u", 0)) / HZ, 0.1)
+
+
+func _player_capacity() -> int:
+	return mini(int(tuning.get("capacity_max", 20)), int(tuning["carry_capacity"]) + 2 * int(player.get("successful_lights", 0)))
 
 
 func _update_safe_zones() -> void:
@@ -667,7 +726,7 @@ func _update_safe_zones() -> void:
 		if str(shade["state"]) == "stunned" or int(shade["safe_ticks"]) > 0:
 			continue
 		for lamp in lanterns:
-			if not bool(lamp["lit"]):
+			if not bool(lamp["lit"]) or _fuel(lamp) < float(tuning["low_fuel_threshold"]):
 				continue
 			var delta: Vector3 = shade["pos"] - lamp["pos"]
 			delta.y = 0
@@ -690,6 +749,7 @@ func _try_pulse() -> void:
 	var hit_ids: Array[String] = []
 	for shade in shades:
 		if center.distance_to(shade["pos"]) <= float(tuning["pulse_target_radius_3d"]):
+			var was_draining := str(shade["state"]) == "drain"
 			shade["state"] = "stunned"
 			shade["stun_ticks"] = int(tuning["pulse_stun_ticks"])
 			shade["state_ticks_left"] = int(tuning["pulse_stun_ticks"])
@@ -700,7 +760,7 @@ func _try_pulse() -> void:
 				away = Vector3(1, 0, 0)
 			shade["recoil_dir"] = away.normalized()
 			shade["recoil_ticks"] = int(tuning["pulse_push_ticks"])
-			score += int(tuning["score"]["per_stun"])
+			score += int(tuning["score"]["per_stun"]) + (10 if was_draining else 0)
 			hit_ids.append(str(shade["id"]))
 	for drifter in drifters:
 		if Vector2(center.x - drifter["pos"].x, center.z - drifter["pos"].z).length() > float(tuning["pulse_target_radius_3d"]):
@@ -739,6 +799,39 @@ func _move_shade(shade: Dictionary) -> void:
 			var recoil_step := float(tuning["shade_recoil_m"]) / float(tuning["shade_recoil_ticks"])
 			pos += shade["recoil_dir"] * recoil_step
 	elif str(shade["state"]) not in ["spawning"]:
+		if str(shade["state"]) == "drain":
+			var target_lamp := _lamp_by_id(str(shade.get("target_lantern_id", "")))
+			if target_lamp.is_empty() or not bool(target_lamp["lit"]) or _fuel(target_lamp) >= float(tuning["low_fuel_threshold"]):
+				shade["state"] = "wander"
+			elif _distance_xz(pos, player["pos"]) <= 6.0:
+				shade["state"] = "chase"
+			elif _distance_xz(pos, target_lamp["pos"]) > 2.0:
+				shade["state"] = "wander"
+			else:
+				shade["pos"] = pos
+				return
+		if str(shade["state"]) == "wander":
+			var weak := _nearest_lamp(pos, true)
+			if not weak.is_empty():
+				shade["target_lantern_id"] = weak["id"]
+				var to_weak: Vector3 = weak["pos"] - pos
+				to_weak.y = 0
+				if to_weak.length() <= 2.0:
+					shade["state"] = "drain"
+					shade["drain_event_ticks"] = 0
+					shade["pos"] = pos
+					return
+				pos += to_weak.normalized() * float(tuning["shade_speed"]) / HZ
+				shade["pos"] = pos
+				return
+			var unlit := _nearest_lamp(pos, false)
+			if not unlit.is_empty():
+				var to_unlit: Vector3 = unlit["pos"] - pos
+				to_unlit.y = 0
+				if to_unlit.length() > 2.0:
+					pos += to_unlit.normalized() * float(tuning["shade_speed"]) / HZ
+					shade["pos"] = pos
+					return
 		var distance := _distance_xz(pos, player["pos"])
 		if str(shade["state"]) == "wander" and distance <= float(tuning["shade_detect_radius"]):
 			shade["state"] = "chase"
@@ -754,6 +847,25 @@ func _move_shade(shade: Dictionary) -> void:
 	shade["pos"] = pos
 
 
+func _lamp_by_id(lamp_id: String) -> Dictionary:
+	for lamp in lanterns:
+		if str(lamp["id"]) == lamp_id: return lamp
+	return {}
+
+
+func _nearest_lamp(from: Vector3, weak_only: bool) -> Dictionary:
+	var best: Dictionary = {}
+	var best_d := INF
+	for lamp in lanterns:
+		var eligible := bool(lamp["lit"]) and _fuel(lamp) < float(tuning["low_fuel_threshold"]) if weak_only else not bool(lamp["lit"])
+		if not eligible: continue
+		var d := _distance_xz(from, lamp["pos"])
+		if d < best_d or (is_equal_approx(d, best_d) and (best.is_empty() or str(lamp["id"]) < str(best["id"]))):
+			best = lamp
+			best_d = d
+	return best
+
+
 func _update_shades() -> void:
 	shades.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return _numeric_suffix(str(a["id"])) < _numeric_suffix(str(b["id"])))
 	for shade in shades:
@@ -762,7 +874,7 @@ func _update_shades() -> void:
 
 func _inside_lit_safe_zone(from: Vector3, to: Vector3) -> bool:
 	for lamp in lanterns:
-		if bool(lamp["lit"]):
+		if bool(lamp["lit"]) and _fuel(lamp) >= float(tuning["low_fuel_threshold"]):
 			var old_d := _distance_xz(from, lamp["pos"])
 			var new_d := _distance_xz(to, lamp["pos"])
 			if old_d >= float(tuning["safe_radius"]) and new_d < float(tuning["safe_radius"]):
@@ -920,19 +1032,21 @@ func _check_game_end() -> void:
 		state = "lost"
 		_emit("game_over", {"result": "lost", "reason": "no_flames"}, tick)
 		return
-	var all_lit := true
-	for lamp in lanterns:
-		if not bool(lamp["lit"]):
-			all_lit = false
-			break
-	if all_lit:
-		state = "won"
-		score += floori(time_left_s) * int(tuning["score"]["per_second_left"]) + int(player["flames"]) * int(tuning["score"]["per_flame_left"])
-		_emit("game_over", {"result": "won", "reason": "all_lanterns"}, tick)
+	if time_left_s > 0.0:
 		return
-	if time_left_s <= 0.0:
-		state = "lost"
-		_emit("game_over", {"result": "lost", "reason": "dawn"}, tick)
+	var lit_count := 0
+	for lamp in lanterns:
+		if bool(lamp["lit"]): lit_count += 1
+	var required := ceili(float(lanterns.size()) * float(tuning["win_ratio"]))
+	if lit_count >= required:
+		state = "won"
+		for lamp in lanterns:
+			if bool(lamp["lit"]): score += 50 + floori(_fuel(lamp))
+		score += int(player["flames"]) * int(tuning["score"]["per_flame_left"])
+		_emit("game_over", {"result": "won", "reason": "dawn_survived"}, tick)
+		return
+	state = "lost"
+	_emit("game_over", {"result": "lost", "reason": "dawn"}, tick)
 
 
 func _snapshot() -> Dictionary:
@@ -941,10 +1055,10 @@ func _snapshot() -> Dictionary:
 		mote_rows.append({"id": mote["id"], "pos": _vec_array(mote["pos"]), "kind": mote["kind"], "ttl_s": null if str(mote["kind"]) == "random" else snappedf(float(mote["ttl_ticks"]) / HZ, 0.001)})
 	var lamp_rows: Array[Dictionary] = []
 	for lamp in lanterns:
-		lamp_rows.append({"id": lamp["id"], "pos": _vec_array(lamp["pos"]), "lit": lamp["lit"], "deposited": lamp["deposited"]})
+		lamp_rows.append({"id": lamp["id"], "pos": _vec_array(lamp["pos"]), "lit": lamp["lit"], "deposited": lamp["deposited"], "fuel": _fuel(lamp) if bool(lamp["lit"]) else 0.0, "ever_lit": lamp["ever_lit"], "relit_count": lamp["relit_count"]})
 	var shade_rows: Array[Dictionary] = []
 	for shade in shades:
-		shade_rows.append({"id": shade["id"], "pos": _vec_array(shade["pos"]), "state": shade["state"], "state_ticks_left": shade["state_ticks_left"]})
+		shade_rows.append({"id": shade["id"], "pos": _vec_array(shade["pos"]), "state": shade["state"], "state_ticks_left": shade["state_ticks_left"], "target_lantern_id": shade.get("target_lantern_id", "")})
 	var drifter_rows: Array[Dictionary] = []
 	for drifter in drifters:
 		drifter_rows.append({"id": drifter["id"], "pos": _vec_array(drifter["pos"]), "state": drifter["state"], "stolen": drifter["stolen"]})
@@ -953,7 +1067,7 @@ func _snapshot() -> Dictionary:
 		charm_rows.append({"id": charm["id"], "pos": _vec_array(charm["pos"]), "available": charm["available"], "respawn_s": snappedf(float(charm["respawn_ticks"]) / HZ, 0.001)})
 	return {"type": "snapshot", "tick": tick, "sim_tick": sim_tick, "night": night, "state": state, "time_left_s": snappedf(time_left_s, 0.001), "score": score,
 		"wind": {"active": wind_active, "dir_deg": snappedf(wind_dir_deg, 0.001)},
-		"player": {"pos": _vec_array(player["pos"]), "vel": _vec_array(player["vel"]), "grounded": player["grounded"], "flames": player["flames"], "carried": player["carried"],
+		"player": {"pos": _vec_array(player["pos"]), "vel": _vec_array(player["vel"]), "grounded": player["grounded"], "flames": player["flames"], "carried": player["carried"], "capacity": _player_capacity(),
 			"invuln": snappedf(float(player["invuln_ticks"]) / HZ, 0.001), "dash_cd_s": snappedf(float(player["dash_cd_ticks"]) / HZ, 0.001), "pulse_cd_s": snappedf(float(player["pulse_cd_ticks"]) / HZ, 0.001), "charm_s": snappedf(float(player["charm_ticks"]) / HZ, 0.001)},
 		"lanterns": lamp_rows, "motes": mote_rows, "motes_active": motes.size(), "shades": shade_rows, "drifters": drifter_rows, "charms": charm_rows}
 
@@ -972,7 +1086,7 @@ func _emit(name: String, data: Dictionary, event_tick: int = -1) -> void:
 
 func _inside_lit_safe_zone_check(pos: Vector3) -> bool:
 	for lamp in lanterns:
-		if bool(lamp["lit"]) and _distance_xz(pos, lamp["pos"]) < float(tuning["safe_radius"]):
+		if bool(lamp["lit"]) and _fuel(lamp) >= float(tuning["low_fuel_threshold"]) and _distance_xz(pos, lamp["pos"]) < float(tuning["safe_radius"]):
 			return true
 	return false
 
